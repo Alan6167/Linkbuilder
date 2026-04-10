@@ -168,9 +168,66 @@ async function loadBacklinksList() {
         ${bl.ugc ? '<span class="badge badge-ugc">UGC</span>' : ''}
         ${bl.isBlogUrl ? '<span class="badge badge-commentable">Blog</span>' : ''}
         ${bl.nofollow ? '<span>nofollow</span>' : '<span>dofollow</span>'}
+        ${['commented', 'pending_moderation'].includes(bl.status) ? `<button class="btn-reverify btn btn-small" data-id="${bl.id}" data-url="${escapeHtml(bl.sourceUrl)}">${t('backlinks.reverify')}</button>` : ''}
+        ${bl.status === 'publish_failed' ? `<button class="btn-retry btn btn-small" data-id="${bl.id}">${t('backlinks.retry')}</button>` : ''}
       </div>
     </div>
   `).join('');
+
+  // Re-verify button handler
+  list.querySelectorAll('.btn-reverify').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const blId = parseInt(btn.dataset.id);
+      const url = btn.dataset.url;
+      btn.disabled = true;
+      btn.textContent = '...';
+
+      try {
+        const { tabId } = await chrome.runtime.sendMessage({ type: 'analyzeUrl', url });
+        const verification = await chrome.runtime.sendMessage({
+          type: 'verifyComment', tabId, commentText: '', website: ''
+        });
+        await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
+
+        // Find and update the backlink
+        const allBl = await getAllRecords(STORES.BACKLINKS);
+        const bl = allBl.find(b => b.id === blId);
+        if (bl) {
+          if (verification.status === 'confirmed') {
+            bl.status = 'commented';
+          } else if (verification.status === 'rejected') {
+            bl.status = 'publish_failed';
+          } else {
+            bl.status = 'pending_moderation';
+          }
+          bl.lastVerified = new Date().toISOString();
+          bl.lastVerifyResult = verification;
+          await updateRecord(STORES.BACKLINKS, bl);
+        }
+        await loadBacklinksList();
+      } catch {
+        btn.textContent = t('backlinks.reverify');
+        btn.disabled = false;
+      }
+    });
+  });
+
+  // Retry button: reset to commentable so it can be published again
+  list.querySelectorAll('.btn-retry').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const blId = parseInt(btn.dataset.id);
+      const allBl = await getAllRecords(STORES.BACKLINKS);
+      const bl = allBl.find(b => b.id === blId);
+      if (bl) {
+        bl.status = 'commentable';
+        delete bl.errorMessage;
+        await updateRecord(STORES.BACKLINKS, bl);
+        await loadBacklinksList();
+      }
+    });
+  });
 
   const pagination = document.getElementById('pagination');
   if (totalPages > 1) {
@@ -556,6 +613,22 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
 
         addLog(logEntries, `[${pageInfo.language}] ${pageInfo.title}`, 'info');
 
+        // Pre-check: has this site already commented on this page?
+        const preCheck = await chrome.runtime.sendMessage({
+          type: 'verifyComment', tabId, commentText: '', website
+        });
+        if (preCheck.verified) {
+          addLog(logEntries, t('publish.alreadyCommented', { site: site.profileName }), 'info');
+          if (!bl._siteResults) bl._siteResults = [];
+          bl._siteResults.push('already_exists');
+          pubStats.moderation++; // count as done, skip
+          if (mode === 'auto') {
+            await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
+            tabId = null;
+          }
+          continue; // skip to next site
+        }
+
         const commentConfig = getCommentConfig(pageInfo.linkFormat);
         // Override link URL with current site's website
         commentConfig.linkUrl = commentConfig.linkUrl || website;
@@ -636,9 +709,15 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
           publishedAt: new Date().toISOString()
         }]);
 
+      // Track this site's result for the backlink
+      if (!bl._siteResults) bl._siteResults = [];
+      bl._siteResults.push(commentStatus);
+
       } catch (err) {
         addLog(logEntries, t('common.error', { message: err.message }), 'error');
         pubStats.failed++;
+        if (!bl._siteResults) bl._siteResults = [];
+        bl._siteResults.push('error');
         if (tabId) {
           try { await chrome.runtime.sendMessage({ type: 'closeTab', tabId }); } catch {}
         }
@@ -651,10 +730,25 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
       }
     }
 
-    // Update backlink status after all sites processed for this page
-    bl.status = 'commented';
+    // Update backlink status based on actual results
+    const results = bl._siteResults || [];
+    const hasConfirmed = results.includes('confirmed');
+    const allFailed = results.every(r => r === 'submit_failed' || r === 'rejected' || r === 'error');
+    const hasCaptcha = results.includes('captcha');
+
+    if (hasConfirmed) {
+      bl.status = 'commented'; // at least one confirmed
+    } else if (hasCaptcha) {
+      bl.status = 'captcha_blocked';
+    } else if (allFailed && results.length > 0) {
+      bl.status = 'publish_failed';
+    } else {
+      bl.status = 'pending_moderation'; // submitted but not confirmed
+    }
     bl.commentedAt = new Date().toISOString();
     bl.commentedWith = selectedSites.map(s => s.profileName);
+    bl.verifyResults = results;
+    delete bl._siteResults;
     await updateRecord(STORES.BACKLINKS, bl);
 
     // Delay between different blog pages

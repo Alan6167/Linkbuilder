@@ -1,12 +1,26 @@
 import { STORES, addRecords, getAllRecords, updateRecord, clearStore, getRecordCount, getSetting, setSetting } from '../lib/db.js';
 import { parseRow, filterBacklinks, getFilterStats, DEFAULT_FILTER_CONFIG } from '../lib/filter.js';
 import { generateComment, analyzePageForComments } from '../lib/gemini.js';
+import { t, setLanguage, getLanguage } from '../lib/i18n.js';
 
 // ========== State ==========
 let parsedBacklinks = [];
 let filteredBacklinks = [];
 let currentPage = 1;
 const PAGE_SIZE = 20;
+
+// ========== i18n ==========
+document.getElementById('lang-toggle').addEventListener('click', async () => {
+  const newLang = getLanguage() === 'zh' ? 'en' : 'zh';
+  setLanguage(newLang);
+  await setSetting('language', newLang);
+  document.getElementById('setting-language').value = newLang;
+});
+
+document.getElementById('setting-language').addEventListener('change', async (e) => {
+  setLanguage(e.target.value);
+  await setSetting('language', e.target.value);
+});
 
 // ========== Tab Navigation ==========
 document.querySelectorAll('.tab').forEach(tab => {
@@ -57,19 +71,19 @@ async function processFile(file) {
   progressSection.hidden = false;
   statsSection.hidden = true;
   progressFill.style.width = '10%';
-  progressText.textContent = 'Reading file...';
+  progressText.textContent = t('import.reading');
 
   try {
     const data = await file.arrayBuffer();
     progressFill.style.width = '30%';
-    progressText.textContent = 'Parsing Excel...';
+    progressText.textContent = t('import.parsing');
 
     const workbook = XLSX.read(data, { type: 'array' });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
 
     progressFill.style.width = '50%';
-    progressText.textContent = 'Filtering backlinks...';
+    progressText.textContent = t('import.filtering');
 
     // Skip header row
     const dataRows = rows.slice(1).filter(row => row.length >= 19);
@@ -78,14 +92,14 @@ async function processFile(file) {
     parsedBacklinks = dataRows.map(row => parseRow(row));
 
     progressFill.style.width = '70%';
-    progressText.textContent = 'Applying filters...';
+    progressText.textContent = t('import.applying');
 
     // Get filter config from settings
     const config = await getFilterConfig();
     filteredBacklinks = filterBacklinks(parsedBacklinks, config);
 
     progressFill.style.width = '100%';
-    progressText.textContent = 'Done!';
+    progressText.textContent = t('import.done');
 
     // Show stats
     const stats = getFilterStats(parsedBacklinks, filteredBacklinks);
@@ -96,7 +110,7 @@ async function processFile(file) {
     statsSection.hidden = false;
 
   } catch (err) {
-    progressText.textContent = `Error: ${err.message}`;
+    progressText.textContent = t('common.error', { message: err.message });
     progressFill.style.width = '0%';
     console.error('Import error:', err);
   }
@@ -108,17 +122,17 @@ document.getElementById('btn-save-import').addEventListener('click', async () =>
 
   const btn = document.getElementById('btn-save-import');
   btn.disabled = true;
-  btn.textContent = 'Saving...';
+  btn.textContent = t('import.saving');
 
   try {
     const count = await addRecords(STORES.BACKLINKS, filteredBacklinks);
-    btn.textContent = `Saved ${count} records!`;
+    btn.textContent = t('import.saved', { count });
     setTimeout(() => {
-      btn.textContent = 'Save to Database';
+      btn.textContent = t('import.save');
       btn.disabled = false;
     }, 2000);
   } catch (err) {
-    btn.textContent = `Error: ${err.message}`;
+    btn.textContent = t('common.error', { message: err.message });
     btn.disabled = false;
   }
 });
@@ -135,7 +149,7 @@ async function loadBacklinksList() {
   }
 
   if (backlinks.length === 0) {
-    list.innerHTML = '<p class="empty-state">No backlinks found. Import data from the Import tab.</p>';
+    list.innerHTML = `<p class="empty-state">${t('backlinks.empty')}</p>`;
     document.getElementById('pagination').hidden = true;
     return;
   }
@@ -166,7 +180,7 @@ async function loadBacklinksList() {
   const pagination = document.getElementById('pagination');
   if (totalPages > 1) {
     pagination.hidden = false;
-    document.getElementById('page-info').textContent = `Page ${currentPage} / ${totalPages}`;
+    document.getElementById('page-info').textContent = t('pagination.page', { current: currentPage, total: totalPages });
     document.getElementById('btn-prev').disabled = currentPage === 1;
     document.getElementById('btn-next').disabled = currentPage === totalPages;
   } else {
@@ -192,7 +206,7 @@ document.getElementById('btn-next').addEventListener('click', () => {
 document.getElementById('btn-analyze-all').addEventListener('click', async () => {
   const apiKey = await getSetting('geminiApiKey');
   if (!apiKey) {
-    alert('Please set your Gemini API key in Settings first.');
+    alert(t('settings.noApiKey'));
     return;
   }
 
@@ -200,7 +214,7 @@ document.getElementById('btn-analyze-all').addEventListener('click', async () =>
   const pending = backlinks.filter(b => b.status === 'pending');
 
   if (pending.length === 0) {
-    alert('No pending backlinks to analyze.');
+    alert(t('backlinks.noPending'));
     return;
   }
 
@@ -208,7 +222,7 @@ document.getElementById('btn-analyze-all').addEventListener('click', async () =>
   btn.disabled = true;
 
   for (let i = 0; i < pending.length; i++) {
-    btn.textContent = `Analyzing ${i + 1}/${pending.length}...`;
+    btn.textContent = t('backlinks.analyzing', { current: i + 1, total: pending.length });
     const bl = pending[i];
 
     try {
@@ -249,7 +263,7 @@ document.getElementById('btn-analyze-all').addEventListener('click', async () =>
     await loadBacklinksList();
   }
 
-  btn.textContent = 'Analyze All';
+  btn.textContent = t('backlinks.analyzeAll');
   btn.disabled = false;
 });
 
@@ -261,13 +275,13 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
   const mode = document.getElementById('pub-mode').value;
 
   if (!name || !email || !website) {
-    alert('Please fill in your name, email, and website URL.');
+    alert(t('publish.fillRequired'));
     return;
   }
 
   const apiKey = await getSetting('geminiApiKey');
   if (!apiKey) {
-    alert('Please set your Gemini API key in Settings first.');
+    alert(t('settings.noApiKey'));
     return;
   }
 
@@ -281,7 +295,7 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
   const commentable = backlinks.filter(b => b.status === 'commentable');
 
   if (commentable.length === 0) {
-    alert('No commentable backlinks found. Analyze backlinks first.');
+    alert(t('publish.noCommentable'));
     return;
   }
 
@@ -292,11 +306,11 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
 
   const btn = document.getElementById('btn-start-publish');
   btn.disabled = true;
-  btn.textContent = 'Publishing...';
+  btn.textContent = t('publish.publishing');
 
   for (const bl of commentable) {
     try {
-      addLog(logEntries, `Opening: ${bl.sourceUrl}`, 'info');
+      addLog(logEntries, t('publish.opening', { url: bl.sourceUrl }), 'info');
 
       // Open the page
       const { tabId } = await chrome.runtime.sendMessage({ type: 'analyzeUrl', url: bl.sourceUrl });
@@ -311,7 +325,7 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
       }
 
       // Generate comment with AI
-      addLog(logEntries, 'Generating comment...', 'info');
+      addLog(logEntries, t('publish.generating'), 'info');
       const commentText = await generateComment(apiKey, {
         title: pageInfo.title,
         content: pageInfo.contentExcerpt,
@@ -320,7 +334,7 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
         myWebsiteUrl: website
       });
 
-      addLog(logEntries, `Comment: "${commentText.substring(0, 80)}..."`, 'info');
+      addLog(logEntries, t('publish.comment', { text: commentText.substring(0, 80) }), 'info');
 
       // Fill the form
       const formData = {
@@ -338,7 +352,7 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
         fieldSelectors
       });
 
-      addLog(logEntries, 'Form filled!', 'success');
+      addLog(logEntries, t('publish.filled'), 'success');
 
       if (mode === 'auto') {
         // Auto submit
@@ -349,18 +363,17 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
         });
 
         if (submitResult.success) {
-          addLog(logEntries, 'Comment submitted!', 'success');
+          addLog(logEntries, t('publish.submitted'), 'success');
           bl.status = 'commented';
         } else {
-          addLog(logEntries, 'Submit failed: ' + (submitResult.error || 'unknown'), 'error');
+          addLog(logEntries, t('publish.submitFailed', { error: submitResult.error || 'unknown' }), 'error');
         }
 
         await new Promise(resolve => setTimeout(resolve, 2000));
         await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
       } else {
         // Semi-auto: leave tab open for user to review and submit manually
-        addLog(logEntries, 'Review the comment and click submit manually.', 'info');
-        // Wait for user - don't close tab
+        addLog(logEntries, t('publish.review'), 'info');
       }
 
       // Save comment record
@@ -379,13 +392,13 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
       await updateRecord(STORES.BACKLINKS, bl);
 
     } catch (err) {
-      addLog(logEntries, `Error: ${err.message}`, 'error');
+      addLog(logEntries, t('common.error', { message: err.message }), 'error');
     }
   }
 
-  btn.textContent = 'Start Publishing';
+  btn.textContent = t('publish.start');
   btn.disabled = false;
-  addLog(logEntries, `Done! Processed ${commentable.length} backlinks.`, 'success');
+  addLog(logEntries, t('publish.done', { count: commentable.length }), 'success');
 });
 
 function addLog(container, message, type = 'info') {
@@ -410,6 +423,15 @@ async function loadSettings() {
   const pubWebsite = await getSetting('publishWebsite');
   if (pubWebsite) document.getElementById('pub-website').value = pubWebsite;
 
+  // Load language setting
+  const lang = await getSetting('language');
+  if (lang) {
+    setLanguage(lang);
+    document.getElementById('setting-language').value = lang;
+  } else {
+    setLanguage('zh');
+  }
+
   // Load DB stats
   document.getElementById('db-backlinks').textContent = await getRecordCount(STORES.BACKLINKS);
   document.getElementById('db-comments').textContent = await getRecordCount(STORES.COMMENTS);
@@ -424,8 +446,8 @@ document.getElementById('btn-save-settings').addEventListener('click', async () 
   await setSetting('filterSpamDomains', document.getElementById('setting-filter-spam').checked);
 
   const btn = document.getElementById('btn-save-settings');
-  btn.textContent = 'Saved!';
-  setTimeout(() => btn.textContent = 'Save Settings', 1500);
+  btn.textContent = t('settings.saved');
+  setTimeout(() => btn.textContent = t('settings.save'), 1500);
 });
 
 // Export backlinks as CSV
@@ -444,14 +466,14 @@ document.getElementById('btn-export-discovered').addEventListener('click', async
 
 // Clear all data
 document.getElementById('btn-clear-data').addEventListener('click', async () => {
-  if (!confirm('Are you sure you want to clear ALL data? This cannot be undone.')) return;
+  if (!confirm(t('settings.clearConfirm'))) return;
 
   await clearStore(STORES.BACKLINKS);
   await clearStore(STORES.COMMENTS);
   await clearStore(STORES.DISCOVERED_SITES);
 
   await loadSettings();
-  alert('All data cleared.');
+  alert(t('settings.cleared'));
 });
 
 // ========== Utility Functions ==========
@@ -463,7 +485,7 @@ function escapeHtml(str) {
 
 function downloadCSV(data, filename, columns) {
   if (data.length === 0) {
-    alert('No data to export.');
+    alert(t('common.noData'));
     return;
   }
 

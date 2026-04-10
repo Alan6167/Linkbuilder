@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -9,27 +9,30 @@
 <body>
   <div class="container">
     <header>
-      <h1>Linkbuilder</h1>
-      <p class="subtitle">Blog Comment Backlink Tool</p>
+      <div class="header-row">
+        <h1>Linkbuilder</h1>
+        <button id="lang-toggle" class="lang-btn">EN</button>
+      </div>
+      <p class="subtitle" data-i18n="header.subtitle">博客评论外链工具</p>
     </header>
 
     <!-- Tab Navigation -->
     <nav class="tabs">
-      <button class="tab active" data-tab="import">Import</button>
-      <button class="tab" data-tab="backlinks">Backlinks</button>
-      <button class="tab" data-tab="publish">Publish</button>
-      <button class="tab" data-tab="settings">Settings</button>
+      <button class="tab active" data-tab="import" data-i18n="tab.import">导入</button>
+      <button class="tab" data-tab="backlinks" data-i18n="tab.backlinks">外链列表</button>
+      <button class="tab" data-tab="publish" data-i18n="tab.publish">发布</button>
+      <button class="tab" data-tab="settings" data-i18n="tab.settings">设置</button>
     </nav>
 
     <!-- Import Tab -->
     <div id="tab-import" class="tab-content active">
       <div class="section">
-        <h2>Import Semrush Backlinks</h2>
-        <p class="hint">Upload .xlsx file exported from Semrush backlink analysis</p>
+        <h2 data-i18n="import.title">导入 Semrush 外链数据</h2>
+        <p class="hint" data-i18n="import.hint">上传从 Semrush 外链分析导出的 .xlsx 文件</p>
 
         <div class="upload-area" id="upload-area">
           <div class="upload-icon">+</div>
-          <p>Click or drag .xlsx file here</p>
+          <p data-i18n="import.upload">点击或拖拽 .xlsx 文件到此处</p>
           <input type="file" id="file-input" accept=".xlsx,.xls,.csv" hidden>
         </div>
 
@@ -37,30 +40,30 @@
           <div class="progress-bar">
             <div class="progress-fill" id="progress-fill"></div>
           </div>
-          <p id="progress-text">Processing...</p>
+          <p id="progress-text" data-i18n="import.processing">处理中...</p>
         </div>
 
         <div id="import-stats" class="stats-section" hidden>
-          <h3>Import Results</h3>
+          <h3 data-i18n="import.results">导入结果</h3>
           <div class="stats-grid">
             <div class="stat">
               <span class="stat-value" id="stat-total">0</span>
-              <span class="stat-label">Total rows</span>
+              <span class="stat-label" data-i18n="import.totalRows">总行数</span>
             </div>
             <div class="stat">
               <span class="stat-value" id="stat-filtered">0</span>
-              <span class="stat-label">After filter</span>
+              <span class="stat-label" data-i18n="import.afterFilter">筛选后</span>
             </div>
             <div class="stat">
               <span class="stat-value" id="stat-ugc">0</span>
-              <span class="stat-label">UGC links</span>
+              <span class="stat-label" data-i18n="import.ugcLinks">UGC 链接</span>
             </div>
             <div class="stat">
               <span class="stat-value" id="stat-blog">0</span>
-              <span class="stat-label">Blog URLs</span>
+              <span class="stat-label" data-i18n="import.blogUrls">博客 URL</span>
             </div>
           </div>
-          <button id="btn-save-import" class="btn btn-primary">Save to Database</button>
+          <button id="btn-save-import" class="btn btn-primary" data-i18n="import.save">保存到数据库</button>
         </div>
       </div>
     </div>
@@ -69,27 +72,27 @@
     <div id="tab-backlinks" class="tab-content">
       <div class="section">
         <div class="toolbar">
-          <h2>Backlink Resources</h2>
+          <h2 data-i18n="backlinks.title">外链资源</h2>
           <div class="toolbar-actions">
             <select id="filter-status">
-              <option value="all">All Status</option>
-              <option value="pending">Pending</option>
-              <option value="commentable">Commentable</option>
-              <option value="not_commentable">Not Commentable</option>
-              <option value="commented">Commented</option>
+              <option value="all" data-i18n="backlinks.all">全部状态</option>
+              <option value="pending" data-i18n="backlinks.pending">待处理</option>
+              <option value="commentable" data-i18n="backlinks.commentable">可评论</option>
+              <option value="not_commentable" data-i18n="backlinks.notCommentable">不可评论</option>
+              <option value="commented" data-i18n="backlinks.commented">已评论</option>
             </select>
-            <button id="btn-analyze-all" class="btn btn-small">Analyze All</button>
+            <button id="btn-analyze-all" class="btn btn-small" data-i18n="backlinks.analyzeAll">全部分析</button>
           </div>
         </div>
 
         <div id="backlinks-list" class="list">
-          <p class="empty-state">No backlinks imported yet. Go to Import tab to upload data.</p>
+          <p class="empty-state" data-i18n="backlinks.empty">暂无外链数据，请到"导入"页面上传数据。</p>
         </div>
 
         <div class="pagination" id="pagination" hidden>
-          <button id="btn-prev" class="btn btn-small">&lt; Prev</button>
-          <span id="page-info">Page 1</span>
-          <button id="btn-next" class="btn btn-small">Next &gt;</button>
+          <button id="btn-prev" class="btn btn-small" data-i18n="pagination.prev">&lt; 上一页</button>
+          <span id="page-info">第 1 页</span>
+          <button id="btn-next" class="btn btn-small" data-i18n="pagination.next">下一页 &gt;</button>
         </div>
       </div>
     </div>
@@ -97,32 +100,32 @@
     <!-- Publish Tab -->
     <div id="tab-publish" class="tab-content">
       <div class="section">
-        <h2>Publish Comments</h2>
+        <h2 data-i18n="publish.title">发布评论</h2>
 
         <div class="form-group">
-          <label>Your Name</label>
+          <label data-i18n="publish.name">你的昵称</label>
           <input type="text" id="pub-name" placeholder="John Doe">
         </div>
         <div class="form-group">
-          <label>Your Email</label>
+          <label data-i18n="publish.email">你的邮箱</label>
           <input type="email" id="pub-email" placeholder="john@example.com">
         </div>
         <div class="form-group">
-          <label>Your Website URL</label>
+          <label data-i18n="publish.website">你的网站 URL</label>
           <input type="url" id="pub-website" placeholder="https://yoursite.com">
         </div>
         <div class="form-group">
-          <label>Publishing Mode</label>
+          <label data-i18n="publish.mode">发布模式</label>
           <select id="pub-mode">
-            <option value="semi-auto">Semi-Auto (Review before submit)</option>
-            <option value="auto">Full Auto (Auto submit)</option>
+            <option value="semi-auto" data-i18n="publish.semiAuto">半自动（审核后提交）</option>
+            <option value="auto" data-i18n="publish.auto">全自动（自动提交）</option>
           </select>
         </div>
 
-        <button id="btn-start-publish" class="btn btn-primary btn-full">Start Publishing</button>
+        <button id="btn-start-publish" class="btn btn-primary btn-full" data-i18n="publish.start">开始发布</button>
 
         <div id="publish-log" class="log-area" hidden>
-          <h3>Publishing Log</h3>
+          <h3 data-i18n="publish.log">发布日志</h3>
           <div id="log-entries"></div>
         </div>
       </div>
@@ -131,59 +134,69 @@
     <!-- Settings Tab -->
     <div id="tab-settings" class="tab-content">
       <div class="section">
-        <h2>Settings</h2>
+        <h2 data-i18n="settings.title">设置</h2>
 
         <div class="form-group">
-          <label>Gemini API Key</label>
-          <input type="password" id="setting-api-key" placeholder="Enter your Gemini API key">
-          <p class="hint">Get your key from Google AI Studio</p>
+          <label data-i18n="settings.language">语言</label>
+          <select id="setting-language">
+            <option value="zh">中文</option>
+            <option value="en">English</option>
+          </select>
         </div>
 
         <div class="form-group">
-          <label>Min Page Ascore</label>
+          <label data-i18n="settings.apiKey">Gemini API 密钥</label>
+          <input type="password" id="setting-api-key" data-i18n-placeholder="settings.apiKeyPlaceholder" placeholder="输入你的 Gemini API 密钥">
+          <p class="hint" data-i18n="settings.apiKeyHint">从 Google AI Studio 获取密钥</p>
+        </div>
+
+        <div class="form-group">
+          <label data-i18n="settings.minAscore">最低页面评分</label>
           <input type="number" id="setting-min-ascore" value="1" min="0" max="100">
         </div>
 
         <div class="form-group">
-          <label>Max External Links</label>
+          <label data-i18n="settings.maxExternal">最大外链数量</label>
           <input type="number" id="setting-max-external" value="5000" min="100">
         </div>
 
         <div class="form-group">
           <label>
-            <input type="checkbox" id="setting-filter-lost" checked> Filter lost links
+            <input type="checkbox" id="setting-filter-lost" checked>
+            <span data-i18n="settings.filterLost">过滤失效链接</span>
           </label>
         </div>
 
         <div class="form-group">
           <label>
-            <input type="checkbox" id="setting-filter-spam" checked> Filter SPAM domains
+            <input type="checkbox" id="setting-filter-spam" checked>
+            <span data-i18n="settings.filterSpam">过滤 SPAM 域名</span>
           </label>
         </div>
 
-        <button id="btn-save-settings" class="btn btn-primary">Save Settings</button>
+        <button id="btn-save-settings" class="btn btn-primary" data-i18n="settings.save">保存设置</button>
 
         <hr>
 
-        <h3>Data Management</h3>
+        <h3 data-i18n="settings.dataManagement">数据管理</h3>
         <div class="btn-group">
-          <button id="btn-export-backlinks" class="btn btn-small">Export Backlinks</button>
-          <button id="btn-export-discovered" class="btn btn-small">Export Discovered Sites</button>
-          <button id="btn-clear-data" class="btn btn-small btn-danger">Clear All Data</button>
+          <button id="btn-export-backlinks" class="btn btn-small" data-i18n="settings.exportBacklinks">导出外链</button>
+          <button id="btn-export-discovered" class="btn btn-small" data-i18n="settings.exportDiscovered">导出发现的网站</button>
+          <button id="btn-clear-data" class="btn btn-small btn-danger" data-i18n="settings.clearData">清除所有数据</button>
         </div>
 
         <div id="db-stats" class="stats-grid" style="margin-top: 12px;">
           <div class="stat">
             <span class="stat-value" id="db-backlinks">0</span>
-            <span class="stat-label">Backlinks</span>
+            <span class="stat-label" data-i18n="settings.backlinks">外链</span>
           </div>
           <div class="stat">
             <span class="stat-value" id="db-comments">0</span>
-            <span class="stat-label">Comments</span>
+            <span class="stat-label" data-i18n="settings.comments">评论</span>
           </div>
           <div class="stat">
             <span class="stat-value" id="db-sites">0</span>
-            <span class="stat-label">Discovered</span>
+            <span class="stat-label" data-i18n="settings.discovered">发现</span>
           </div>
         </div>
       </div>

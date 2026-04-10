@@ -490,11 +490,16 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
   btnStop.hidden = false;
   publishRunning = true;
 
-  for (const bl of commentable) {
+  let pubStats = { success: 0, failed: 0, skipped: 0 };
+
+  for (let i = 0; i < commentable.length; i++) {
     if (!publishRunning) {
       addLog(logEntries, t('backlinks.stopped'), 'error');
       break;
     }
+
+    const bl = commentable[i];
+    addLog(logEntries, `--- [${i + 1}/${commentable.length}] ---`, 'info');
 
     let tabId = null;
     try {
@@ -544,24 +549,34 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
         if (submitResult.success) {
           addLog(logEntries, t('publish.submitted'), 'success');
           bl.status = 'commented';
+          bl.commentedAt = new Date().toISOString();
+          bl.commentedWith = { name, email, website };
+          pubStats.success++;
         } else {
           addLog(logEntries, t('publish.submitFailed', { error: submitResult.error || 'unknown' }), 'error');
+          bl.status = 'publish_failed';
+          bl.errorMessage = submitResult.error || 'Submit button not found';
+          pubStats.failed++;
         }
 
         await new Promise(resolve => setTimeout(resolve, 2000));
         if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
         tabId = null;
       } else {
+        // Semi-auto: mark as pending review, leave tab open
+        bl.status = 'pending_review';
         addLog(logEntries, t('publish.review'), 'info');
+        pubStats.success++;
       }
 
       // Save comment record
       await addRecords(STORES.COMMENTS, [{
         backlinkId: bl.id,
         sourceUrl: bl.sourceUrl,
+        sourceDomain: bl.sourceDomain,
         commentText,
         name, email, website, mode,
-        status: bl.status === 'commented' ? 'published' : 'pending_review',
+        status: bl.status,
         publishedAt: new Date().toISOString()
       }]);
 
@@ -569,6 +584,10 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
 
     } catch (err) {
       addLog(logEntries, t('common.error', { message: err.message }), 'error');
+      bl.status = 'publish_failed';
+      bl.errorMessage = err.message;
+      pubStats.failed++;
+      await updateRecord(STORES.BACKLINKS, bl);
       if (tabId) {
         try { await chrome.runtime.sendMessage({ type: 'closeTab', tabId }); } catch {}
       }
@@ -578,7 +597,11 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
   btnStart.hidden = false;
   btnStop.hidden = true;
   publishRunning = false;
-  addLog(logEntries, t('publish.done', { count: commentable.length }), 'success');
+  addLog(logEntries, t('publish.summary', {
+    total: commentable.length,
+    success: pubStats.success,
+    failed: pubStats.failed
+  }), pubStats.failed > 0 ? 'error' : 'success');
 });
 
 function addLog(container, message, type = 'info') {

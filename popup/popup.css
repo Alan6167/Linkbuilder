@@ -476,6 +476,50 @@ hr {
   margin: 16px 0;
 }
 
+/* Collapsible Sections */
+.collapsible {
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  margin-bottom: 10px;
+  background: white;
+}
+
+.collapsible summary {
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #444;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.collapsible summary::after {
+  content: '\25B6';
+  font-size: 10px;
+  color: #999;
+  transition: transform 0.2s;
+}
+
+.collapsible[open] summary::after {
+  transform: rotate(90deg);
+}
+
+.collapsible summary::-webkit-details-marker {
+  display: none;
+}
+
+.collapsible summary:hover {
+  background: #f8f9fa;
+}
+
+.collapsible-body {
+  padding: 0 12px 12px;
+}
+
 /* Link Preview */
 .link-preview {
   display: block;

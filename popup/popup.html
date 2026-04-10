@@ -105,120 +105,62 @@
       <div class="section">
         <h2 data-i18n="publish.title">发布评论</h2>
 
-        <!-- Site Profiles: select for editing -->
+        <!-- Site Profiles (collapsible) -->
+        <details class="collapsible" id="site-form-details">
+          <summary data-i18n="publish.siteProfile">网站配置</summary>
+          <div class="collapsible-body">
+            <div class="form-group">
+              <div class="site-profile-row">
+                <select id="pub-site-select"></select>
+                <button id="btn-add-site" class="btn btn-small" data-i18n="publish.addSite">+ 新增</button>
+              </div>
+            </div>
+            <div id="site-form">
+              <div class="form-group">
+                <label data-i18n="publish.siteName">配置名称</label>
+                <input type="text" id="pub-profile-name" data-i18n-placeholder="publish.siteNamePlaceholder" placeholder="如：我的游戏站">
+              </div>
+              <div class="form-group">
+                <label data-i18n="publish.name">你的昵称</label>
+                <input type="text" id="pub-name" placeholder="John Doe">
+              </div>
+              <div class="form-group">
+                <label data-i18n="publish.email">你的邮箱</label>
+                <input type="email" id="pub-email" placeholder="john@example.com">
+              </div>
+              <div class="form-group">
+                <label data-i18n="publish.website">你的网站 URL</label>
+                <input type="url" id="pub-website" placeholder="https://yoursite.com">
+              </div>
+              <div class="form-group">
+                <label data-i18n="publish.siteDesc">网站描述</label>
+                <textarea id="pub-site-desc" rows="2" data-i18n-placeholder="publish.siteDescHint" placeholder="描述你的网站是做什么的，AI 据此生成相关评论和锚文本"></textarea>
+              </div>
+              <div class="btn-group">
+                <button id="btn-save-site" class="btn btn-small" data-i18n="publish.saveSite">保存配置</button>
+                <button id="btn-delete-site" class="btn btn-small btn-danger" hidden data-i18n="publish.deleteSite">删除</button>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <!-- Publish targets -->
         <div class="form-group">
-          <label data-i18n="publish.siteProfile">网站配置</label>
-          <div class="site-profile-row">
-            <select id="pub-site-select"></select>
-            <button id="btn-add-site" class="btn btn-small" data-i18n="publish.addSite">+ 新增</button>
-          </div>
-        </div>
-
-        <div id="site-form">
-          <div class="form-group">
-            <label data-i18n="publish.siteName">配置名称</label>
-            <input type="text" id="pub-profile-name" data-i18n-placeholder="publish.siteNamePlaceholder" placeholder="如：我的游戏站">
-          </div>
-          <div class="form-group">
-            <label data-i18n="publish.name">你的昵称</label>
-            <input type="text" id="pub-name" placeholder="John Doe">
-          </div>
-          <div class="form-group">
-            <label data-i18n="publish.email">你的邮箱</label>
-            <input type="email" id="pub-email" placeholder="john@example.com">
-          </div>
-          <div class="form-group">
-            <label data-i18n="publish.website">你的网站 URL</label>
-            <input type="url" id="pub-website" placeholder="https://yoursite.com">
-          </div>
-          <div class="form-group">
-            <label data-i18n="publish.siteDesc">网站描述</label>
-            <textarea id="pub-site-desc" rows="3" data-i18n-placeholder="publish.siteDescHint" placeholder="描述你的网站是做什么的，AI 会据此生成相关评论和锚文本。&#10;如：一个在线花园种植价值计算器，帮助玩家计算 Grow a Garden 游戏中各种植物和宠物的价值"></textarea>
-          </div>
-          <div class="btn-group">
-            <button id="btn-save-site" class="btn btn-small" data-i18n="publish.saveSite">保存配置</button>
-            <button id="btn-delete-site" class="btn btn-small btn-danger" hidden data-i18n="publish.deleteSite">删除</button>
-          </div>
-        </div>
-
-        <hr>
-
-        <!-- Multi-site selection for publishing -->
-        <div class="form-group">
-          <label data-i18n="publish.selectSites">选择要发布的网站（可多选）</label>
+          <label data-i18n="publish.selectSites">选择要发布的网站</label>
           <div id="pub-site-checkboxes" class="checkbox-list"></div>
-          <p class="hint" data-i18n="publish.multiSiteHint">选多个时，每个博客页面会轮流用不同网站发布评论</p>
         </div>
 
-        <div class="form-group">
-          <label data-i18n="publish.publishDelay">发布间隔（秒）</label>
-          <input type="number" id="pub-delay" value="30" min="5" max="300">
-          <p class="hint" data-i18n="publish.delayHint">同一博客页面发多条评论的间隔时间，避免被屏蔽</p>
-        </div>
-
-        <hr>
-        <h3 data-i18n="publish.commentSettings">评论设置</h3>
-
-        <div class="form-group">
-          <label data-i18n="publish.commentLength">评论长度</label>
-          <select id="pub-comment-length">
-            <option value="1-2" data-i18n="publish.lengthShort">短 (1-2 句)</option>
-            <option value="2-4" selected data-i18n="publish.lengthMedium">中 (2-4 句)</option>
-            <option value="4-6" data-i18n="publish.lengthLong">长 (4-6 句)</option>
-          </select>
-        </div>
-
-        <div class="form-group">
-          <label>
-            <input type="checkbox" id="pub-embed-link">
-            <span data-i18n="publish.embedLink">在评论正文中嵌入链接</span>
-          </label>
-        </div>
-
-        <div id="embed-link-fields" hidden>
-          <div class="form-group">
-            <label data-i18n="publish.linkFormat">链接格式</label>
-            <select id="pub-link-format">
-              <option value="auto" data-i18n="publish.linkFormatAuto">自动检测</option>
-              <option value="html" data-i18n="publish.linkFormatHtml">HTML a标签</option>
-              <option value="markdown" data-i18n="publish.linkFormatMd">Markdown</option>
-              <option value="bbcode" data-i18n="publish.linkFormatBBCode">BBCode</option>
-              <option value="plain" data-i18n="publish.linkFormatPlain">纯 URL</option>
-            </select>
+        <div class="form-row">
+          <div class="form-group form-half">
+            <label data-i18n="publish.maxPages">发布数量</label>
+            <input type="number" id="pub-max-pages" value="0" min="0">
+            <p class="hint" data-i18n="publish.maxPagesHint">0 = 全部</p>
           </div>
-          <div class="form-group">
-            <label data-i18n="publish.linkUrl">嵌入的链接 URL</label>
-            <input type="url" id="pub-link-url" placeholder="https://yoursite.com/page">
-            <p class="hint" data-i18n="publish.linkUrlHint">留空则使用上方的网站 URL</p>
-          </div>
-          <div class="form-group">
-            <label data-i18n="publish.linkAnchor">链接锚文本</label>
-            <input type="text" id="pub-link-anchor" data-i18n-placeholder="publish.linkAnchorHint" placeholder="留空 = AI 根据文章内容自动生成">
-          </div>
-          <div class="form-group">
-            <label data-i18n="publish.linkPreview">格式预览</label>
-            <code id="link-preview" class="link-preview"></code>
+          <div class="form-group form-half">
+            <label data-i18n="publish.publishDelay">间隔（秒）</label>
+            <input type="number" id="pub-delay" value="30" min="5" max="300">
           </div>
         </div>
-
-        <div class="form-group">
-          <label data-i18n="publish.customInstructions">自定义指令</label>
-          <textarea id="pub-custom-instructions" rows="3" data-i18n-placeholder="publish.customInstructionsHint" placeholder="给 AI 的额外指令，如：&#10;语气友好热情&#10;提到你用过类似的工具&#10;结尾提一个问题"></textarea>
-        </div>
-
-        <div class="form-group">
-          <label>
-            <input type="checkbox" id="pub-custom-prompt-toggle">
-            <span data-i18n="publish.useCustomPrompt">使用完全自定义提示词</span>
-          </label>
-        </div>
-
-        <div class="form-group" id="custom-prompt-field" hidden>
-          <label data-i18n="publish.customPrompt">自定义提示词模板</label>
-          <textarea id="pub-custom-prompt" rows="6" data-i18n-placeholder="publish.customPromptHint" placeholder="可用变量：{title} {content} {language} {url} {myWebsiteName} {myWebsiteUrl} {commentLength} {embedLinkInstruction} {customInstructions}"></textarea>
-        </div>
-
-        <hr>
 
         <div class="form-group">
           <label data-i18n="publish.mode">发布模式</label>
@@ -227,6 +169,75 @@
             <option value="auto" data-i18n="publish.auto">全自动（自动提交）</option>
           </select>
         </div>
+
+        <!-- Comment settings (collapsible) -->
+        <details class="collapsible">
+          <summary data-i18n="publish.commentSettings">评论设置</summary>
+          <div class="collapsible-body">
+            <div class="form-group">
+              <label data-i18n="publish.commentLength">评论长度</label>
+              <select id="pub-comment-length">
+                <option value="1-2" data-i18n="publish.lengthShort">短 (1-2 句)</option>
+                <option value="2-4" selected data-i18n="publish.lengthMedium">中 (2-4 句)</option>
+                <option value="4-6" data-i18n="publish.lengthLong">长 (4-6 句)</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label>
+                <input type="checkbox" id="pub-embed-link">
+                <span data-i18n="publish.embedLink">在评论正文中嵌入链接</span>
+              </label>
+            </div>
+
+            <div id="embed-link-fields" hidden>
+              <div class="form-group">
+                <label data-i18n="publish.linkFormat">链接格式</label>
+                <select id="pub-link-format">
+                  <option value="auto" data-i18n="publish.linkFormatAuto">自动检测</option>
+                  <option value="html" data-i18n="publish.linkFormatHtml">HTML a标签</option>
+                  <option value="markdown" data-i18n="publish.linkFormatMd">Markdown</option>
+                  <option value="bbcode" data-i18n="publish.linkFormatBBCode">BBCode</option>
+                  <option value="plain" data-i18n="publish.linkFormatPlain">纯 URL</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label data-i18n="publish.linkUrl">嵌入的链接 URL</label>
+                <input type="url" id="pub-link-url" placeholder="https://yoursite.com/page">
+                <p class="hint" data-i18n="publish.linkUrlHint">留空则使用网站 URL</p>
+              </div>
+              <div class="form-group">
+                <label data-i18n="publish.linkAnchor">链接锚文本</label>
+                <input type="text" id="pub-link-anchor" data-i18n-placeholder="publish.linkAnchorHint" placeholder="留空 = AI 根据文章内容自动生成">
+              </div>
+              <div class="form-group">
+                <label data-i18n="publish.linkPreview">格式预览</label>
+                <code id="link-preview" class="link-preview"></code>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label data-i18n="publish.customInstructions">自定义指令</label>
+              <textarea id="pub-custom-instructions" rows="2" data-i18n-placeholder="publish.customInstructionsHint" placeholder="给 AI 的额外指令，如：语气友好、结尾提问"></textarea>
+            </div>
+          </div>
+        </details>
+
+        <!-- Custom prompt (collapsible) -->
+        <details class="collapsible">
+          <summary data-i18n="publish.advancedPrompt">高级提示词</summary>
+          <div class="collapsible-body">
+            <div class="form-group">
+              <label>
+                <input type="checkbox" id="pub-custom-prompt-toggle">
+                <span data-i18n="publish.useCustomPrompt">使用完全自定义提示词</span>
+              </label>
+            </div>
+            <div class="form-group" id="custom-prompt-field" hidden>
+              <textarea id="pub-custom-prompt" rows="6" data-i18n-placeholder="publish.customPromptHint" placeholder="可用变量：{title} {content} {language} {url} {myWebsiteName} {myWebsiteUrl} {siteDescription} {commentLength} {embedLinkInstruction} {customInstructions}"></textarea>
+            </div>
+          </div>
+        </details>
 
         <button id="btn-start-publish" class="btn btn-primary btn-full" data-i18n="publish.start">开始发布</button>
         <button id="btn-stop-publish" class="btn btn-danger btn-full" hidden data-i18n="publish.stop">停止发布</button>
@@ -254,134 +265,98 @@
         <div class="form-group">
           <label data-i18n="settings.apiKey">Gemini API 密钥</label>
           <input type="password" id="setting-api-key" data-i18n-placeholder="settings.apiKeyPlaceholder" placeholder="输入你的 Gemini API 密钥">
-          <p class="hint" data-i18n="settings.apiKeyHint">从 Google AI Studio 获取密钥</p>
+          <p class="hint" data-i18n="settings.apiKeyHint">从 Google AI Studio 免费获取密钥</p>
         </div>
 
-        <hr>
-        <h3 data-i18n="settings.filterRules">筛选规则</h3>
+        <!-- Filter rules (collapsible) -->
+        <details class="collapsible" open>
+          <summary data-i18n="settings.filterRules">筛选规则</summary>
+          <div class="collapsible-body">
+            <div class="form-row">
+              <div class="form-group form-half">
+                <label data-i18n="settings.minAscore">最低评分</label>
+                <input type="number" id="setting-min-ascore" value="1" min="0" max="100">
+              </div>
+              <div class="form-group form-half">
+                <label data-i18n="settings.maxAscore">最高评分</label>
+                <input type="number" id="setting-max-ascore" value="100" min="0" max="100">
+              </div>
+            </div>
 
-        <div class="form-row">
-          <div class="form-group form-half">
-            <label data-i18n="settings.minAscore">最低评分</label>
-            <input type="number" id="setting-min-ascore" value="1" min="0" max="100">
+            <div class="form-group">
+              <label data-i18n="settings.maxExternal">最大外链数量</label>
+              <input type="number" id="setting-max-external" value="5000" min="100">
+            </div>
+
+            <div class="form-group">
+              <label data-i18n="settings.nofollowFilter">Nofollow 过滤</label>
+              <select id="setting-nofollow">
+                <option value="all" data-i18n="settings.nofollowAll">全部保留</option>
+                <option value="dofollow_only" data-i18n="settings.dofollowOnly">仅 Dofollow</option>
+                <option value="nofollow_only" data-i18n="settings.nofollowOnly">仅 Nofollow</option>
+              </select>
+            </div>
+
+            <div class="form-group"><label><input type="checkbox" id="setting-filter-lost" checked> <span data-i18n="settings.filterLost">过滤失效链接</span></label></div>
+            <div class="form-group"><label><input type="checkbox" id="setting-filter-spam" checked> <span data-i18n="settings.filterSpam">过滤 SPAM 域名</span></label></div>
+            <div class="form-group"><label><input type="checkbox" id="setting-filter-sitewide"> <span data-i18n="settings.filterSitewide">过滤 Sitewide 链接</span></label></div>
+            <div class="form-group"><label><input type="checkbox" id="setting-filter-sponsored"> <span data-i18n="settings.filterSponsored">过滤 Sponsored 链接</span></label></div>
+            <div class="form-group"><label><input type="checkbox" id="setting-dedup" checked> <span data-i18n="settings.dedup">按域名去重</span></label></div>
+            <div class="form-group"><label><input type="checkbox" id="setting-prioritize-ugc" checked> <span data-i18n="settings.prioritizeUgc">UGC 链接优先</span></label></div>
+            <div class="form-group"><label><input type="checkbox" id="setting-prioritize-blog" checked> <span data-i18n="settings.prioritizeBlog">博客 URL 优先</span></label></div>
           </div>
-          <div class="form-group form-half">
-            <label data-i18n="settings.maxAscore">最高评分</label>
-            <input type="number" id="setting-max-ascore" value="100" min="0" max="100">
+        </details>
+
+        <!-- Advanced filters (collapsible, closed by default) -->
+        <details class="collapsible">
+          <summary data-i18n="settings.advancedFilter">高级筛选</summary>
+          <div class="collapsible-body">
+            <div class="form-group">
+              <label data-i18n="settings.customSpam">自定义 SPAM 关键词</label>
+              <textarea id="setting-spam-keywords" rows="2" data-i18n-placeholder="settings.customSpamHint" placeholder="每行一个关键词"></textarea>
+            </div>
+            <div class="form-group">
+              <label data-i18n="settings.domainBlacklist">域名黑名单</label>
+              <textarea id="setting-domain-blacklist" rows="2" data-i18n-placeholder="settings.domainBlacklistHint" placeholder="每行一个域名"></textarea>
+            </div>
+            <div class="form-group">
+              <label data-i18n="settings.urlMustContain">URL 必须包含</label>
+              <input type="text" id="setting-url-must-contain" data-i18n-placeholder="settings.urlMustContainHint" placeholder="如：blog 或 comment">
+            </div>
+            <div class="form-group">
+              <label data-i18n="settings.urlMustNotContain">URL 不能包含</label>
+              <input type="text" id="setting-url-must-not-contain" data-i18n-placeholder="settings.urlMustNotContainHint" placeholder="如：forum 或 login">
+            </div>
           </div>
-        </div>
-
-        <div class="form-group">
-          <label data-i18n="settings.maxExternal">最大外链数量</label>
-          <input type="number" id="setting-max-external" value="5000" min="100">
-        </div>
-
-        <div class="form-group">
-          <label data-i18n="settings.nofollowFilter">Nofollow 过滤</label>
-          <select id="setting-nofollow">
-            <option value="all" data-i18n="settings.nofollowAll">全部保留</option>
-            <option value="dofollow_only" data-i18n="settings.dofollowOnly">仅 Dofollow</option>
-            <option value="nofollow_only" data-i18n="settings.nofollowOnly">仅 Nofollow</option>
-          </select>
-        </div>
-
-        <div class="form-group">
-          <label>
-            <input type="checkbox" id="setting-filter-lost" checked>
-            <span data-i18n="settings.filterLost">过滤失效链接</span>
-          </label>
-        </div>
-
-        <div class="form-group">
-          <label>
-            <input type="checkbox" id="setting-filter-spam" checked>
-            <span data-i18n="settings.filterSpam">过滤 SPAM 域名</span>
-          </label>
-        </div>
-
-        <div class="form-group">
-          <label>
-            <input type="checkbox" id="setting-filter-sitewide">
-            <span data-i18n="settings.filterSitewide">过滤 Sitewide 链接</span>
-          </label>
-        </div>
-
-        <div class="form-group">
-          <label>
-            <input type="checkbox" id="setting-filter-sponsored">
-            <span data-i18n="settings.filterSponsored">过滤 Sponsored 链接</span>
-          </label>
-        </div>
-
-        <div class="form-group">
-          <label>
-            <input type="checkbox" id="setting-dedup" checked>
-            <span data-i18n="settings.dedup">按域名去重</span>
-          </label>
-        </div>
-
-        <div class="form-group">
-          <label>
-            <input type="checkbox" id="setting-prioritize-ugc" checked>
-            <span data-i18n="settings.prioritizeUgc">UGC 链接优先</span>
-          </label>
-        </div>
-
-        <div class="form-group">
-          <label>
-            <input type="checkbox" id="setting-prioritize-blog" checked>
-            <span data-i18n="settings.prioritizeBlog">博客 URL 优先</span>
-          </label>
-        </div>
-
-        <hr>
-        <h3 data-i18n="settings.advancedFilter">高级筛选</h3>
-
-        <div class="form-group">
-          <label data-i18n="settings.customSpam">自定义 SPAM 关键词</label>
-          <textarea id="setting-spam-keywords" rows="2" data-i18n-placeholder="settings.customSpamHint" placeholder="每行一个关键词，如：spam-site&#10;bad-domain"></textarea>
-        </div>
-
-        <div class="form-group">
-          <label data-i18n="settings.domainBlacklist">域名黑名单</label>
-          <textarea id="setting-domain-blacklist" rows="2" data-i18n-placeholder="settings.domainBlacklistHint" placeholder="每行一个域名，如：spam.com&#10;bad-site.org"></textarea>
-        </div>
-
-        <div class="form-group">
-          <label data-i18n="settings.urlMustContain">URL 必须包含</label>
-          <input type="text" id="setting-url-must-contain" data-i18n-placeholder="settings.urlMustContainHint" placeholder="如：blog 或 comment">
-        </div>
-
-        <div class="form-group">
-          <label data-i18n="settings.urlMustNotContain">URL 不能包含</label>
-          <input type="text" id="setting-url-must-not-contain" data-i18n-placeholder="settings.urlMustNotContainHint" placeholder="如：forum 或 login">
-        </div>
+        </details>
 
         <button id="btn-save-settings" class="btn btn-primary" data-i18n="settings.save">保存设置</button>
 
-        <hr>
-
-        <h3 data-i18n="settings.dataManagement">数据管理</h3>
-        <div class="btn-group">
-          <button id="btn-export-backlinks" class="btn btn-small" data-i18n="settings.exportBacklinks">导出外链</button>
-          <button id="btn-export-discovered" class="btn btn-small" data-i18n="settings.exportDiscovered">导出发现的网站</button>
-          <button id="btn-clear-data" class="btn btn-small btn-danger" data-i18n="settings.clearData">清除所有数据</button>
-        </div>
-
-        <div id="db-stats" class="stats-grid" style="margin-top: 12px;">
-          <div class="stat">
-            <span class="stat-value" id="db-backlinks">0</span>
-            <span class="stat-label" data-i18n="settings.backlinks">外链</span>
+        <!-- Data management (collapsible) -->
+        <details class="collapsible">
+          <summary data-i18n="settings.dataManagement">数据管理</summary>
+          <div class="collapsible-body">
+            <div class="btn-group">
+              <button id="btn-export-backlinks" class="btn btn-small" data-i18n="settings.exportBacklinks">导出外链</button>
+              <button id="btn-export-discovered" class="btn btn-small" data-i18n="settings.exportDiscovered">导出发现的网站</button>
+              <button id="btn-clear-data" class="btn btn-small btn-danger" data-i18n="settings.clearData">清除所有数据</button>
+            </div>
+            <div id="db-stats" class="stats-grid" style="margin-top: 12px;">
+              <div class="stat">
+                <span class="stat-value" id="db-backlinks">0</span>
+                <span class="stat-label" data-i18n="settings.backlinks">外链</span>
+              </div>
+              <div class="stat">
+                <span class="stat-value" id="db-comments">0</span>
+                <span class="stat-label" data-i18n="settings.comments">评论</span>
+              </div>
+              <div class="stat">
+                <span class="stat-value" id="db-sites">0</span>
+                <span class="stat-label" data-i18n="settings.discovered">发现</span>
+              </div>
+            </div>
           </div>
-          <div class="stat">
-            <span class="stat-value" id="db-comments">0</span>
-            <span class="stat-label" data-i18n="settings.comments">评论</span>
-          </div>
-          <div class="stat">
-            <span class="stat-value" id="db-sites">0</span>
-            <span class="stat-label" data-i18n="settings.discovered">发现</span>
-          </div>
-        </div>
+        </details>
       </div>
     </div>
   </div>

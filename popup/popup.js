@@ -479,6 +479,7 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
 
   const mode = document.getElementById('pub-mode').value;
   const delay = Math.max(5, parseInt(document.getElementById('pub-delay').value) || 30);
+  const maxPages = parseInt(document.getElementById('pub-max-pages').value) || 0;
 
   const apiKey = await getSetting('geminiApiKey');
   if (!apiKey) {
@@ -487,7 +488,12 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
   }
 
   const backlinks = await getAllRecords(STORES.BACKLINKS);
-  const commentable = backlinks.filter(b => b.status === 'commentable');
+  let commentable = backlinks.filter(b => b.status === 'commentable');
+
+  // Apply max pages limit
+  if (maxPages > 0 && commentable.length > maxPages) {
+    commentable = commentable.slice(0, maxPages);
+  }
 
   if (commentable.length === 0) {
     alert(t('publish.noCommentable'));

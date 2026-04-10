@@ -83,7 +83,8 @@
 ├── lib/
 │   ├── db.js                # IndexedDB 数据库封装
 │   ├── filter.js            # Semrush 数据解析与筛选规则
-│   ├── gemini.js            # Gemini AI 接口
+│   ├── gemini.js            # Gemini 2.5 Flash AI 接口
+│   ├── i18n.js              # 中英文双语翻译
 │   └── xlsx.full.min.js     # Excel 解析库
 ├── popup/                   # 插件弹出窗口界面
 │   ├── popup.html
@@ -95,7 +96,7 @@
 
 ## 成本
 
-- **Gemini 2.0 Flash** 费用极低：2000 次请求约 $1.13，单条外链成本约 $0.0000624
+- **Gemini 2.5 Flash** 免费层级：输入输出完全免费，从 [Google AI Studio](https://aistudio.google.com/apikey) 获取 API Key 即可使用
 - 需要 Semrush 账号来导出竞争对手的外链数据
 
 ## 注意事项

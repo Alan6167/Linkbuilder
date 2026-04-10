@@ -511,7 +511,7 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
   btnStop.hidden = false;
   publishRunning = true;
 
-  let pubStats = { success: 0, failed: 0 };
+  let pubStats = { confirmed: 0, moderation: 0, failed: 0, captcha: 0 };
 
   for (let i = 0; i < commentable.length; i++) {
     if (!publishRunning) {
@@ -568,6 +568,8 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
 
         addLog(logEntries, t('publish.filled'), 'success');
 
+        let commentStatus = 'unknown';
+
         if (mode === 'auto') {
           const submitResult = await chrome.runtime.sendMessage({
             type: 'submitCommentForm',
@@ -577,21 +579,41 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
 
           if (submitResult.success) {
             addLog(logEntries, t('publish.submitted'), 'success');
-            pubStats.success++;
+
+            // Verify: wait for page update and check result
+            addLog(logEntries, t('publish.verifying'), 'info');
+            const verification = await chrome.runtime.sendMessage({
+              type: 'verifyComment',
+              tabId,
+              commentText: commentText.substring(0, 50),
+              website
+            });
+
+            commentStatus = verification.status; // confirmed | pending_moderation | rejected | captcha | unknown
+            const statusKey = `publish.verify_${commentStatus}`;
+            const logType = commentStatus === 'confirmed' ? 'success'
+              : (commentStatus === 'rejected' || commentStatus === 'captcha') ? 'error' : 'info';
+            addLog(logEntries, `${t(statusKey)}: ${verification.reason}`, logType);
+
+            if (commentStatus === 'confirmed') pubStats.confirmed++;
+            else if (commentStatus === 'captcha') pubStats.captcha++;
+            else if (commentStatus === 'rejected') pubStats.failed++;
+            else pubStats.moderation++; // pending_moderation or unknown
           } else {
             addLog(logEntries, t('publish.submitFailed', { error: submitResult.error || 'unknown' }), 'error');
+            commentStatus = 'submit_failed';
             pubStats.failed++;
           }
 
-          await new Promise(resolve => setTimeout(resolve, 2000));
           if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
           tabId = null;
         } else {
+          commentStatus = 'pending_review';
           addLog(logEntries, t('publish.review'), 'info');
-          pubStats.success++;
+          pubStats.moderation++;
         }
 
-        // Save comment record
+        // Save comment record with verification status
         await addRecords(STORES.COMMENTS, [{
           backlinkId: bl.id,
           sourceUrl: bl.sourceUrl,
@@ -599,7 +621,7 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
           commentText,
           name, email, website, mode,
           siteProfile: site.profileName,
-          status: mode === 'auto' ? 'published' : 'pending_review',
+          status: commentStatus,
           publishedAt: new Date().toISOString()
         }]);
 
@@ -618,8 +640,8 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
       }
     }
 
-    // Update backlink status after all sites processed
-    bl.status = pubStats.failed === 0 ? 'commented' : 'publish_failed';
+    // Update backlink status after all sites processed for this page
+    bl.status = 'commented';
     bl.commentedAt = new Date().toISOString();
     bl.commentedWith = selectedSites.map(s => s.profileName);
     await updateRecord(STORES.BACKLINKS, bl);
@@ -634,10 +656,13 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
   btnStart.hidden = false;
   btnStop.hidden = true;
   publishRunning = false;
-  addLog(logEntries, t('publish.summary', {
-    total: commentable.length * selectedSites.length,
-    success: pubStats.success,
-    failed: pubStats.failed
+  const total = commentable.length * selectedSites.length;
+  addLog(logEntries, t('publish.summaryDetail', {
+    total,
+    confirmed: pubStats.confirmed,
+    moderation: pubStats.moderation,
+    failed: pubStats.failed,
+    captcha: pubStats.captcha
   }), pubStats.failed > 0 ? 'error' : 'success');
 });
 

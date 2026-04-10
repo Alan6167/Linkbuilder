@@ -1,6 +1,6 @@
 import { STORES, addRecords, getAllRecords, updateRecord, clearStore, getRecordCount, getSetting, setSetting } from '../lib/db.js';
 import { parseRow, filterBacklinks, getFilterStats, DEFAULT_FILTER_CONFIG } from '../lib/filter.js';
-import { generateComment, setRateLimitCallback } from '../lib/gemini.js';
+import { generateComment, setRateLimitCallback, formatLink } from '../lib/gemini.js';
 import { t, setLanguage, getLanguage } from '../lib/i18n.js';
 
 // ========== State ==========
@@ -395,10 +395,58 @@ document.getElementById('btn-delete-site').addEventListener('click', async () =>
   await loadSiteProfiles();
 });
 
+// Toggle embed link fields
+document.getElementById('pub-embed-link').addEventListener('change', (e) => {
+  document.getElementById('embed-link-fields').hidden = !e.target.checked;
+  updateLinkPreview();
+});
+
+// Toggle custom prompt field
+document.getElementById('pub-custom-prompt-toggle').addEventListener('change', (e) => {
+  document.getElementById('custom-prompt-field').hidden = !e.target.checked;
+});
+
+// Update link preview on any change
+for (const id of ['pub-link-format', 'pub-link-url', 'pub-link-anchor']) {
+  document.getElementById(id).addEventListener('input', updateLinkPreview);
+  document.getElementById(id).addEventListener('change', updateLinkPreview);
+}
+
+function updateLinkPreview() {
+  const format = document.getElementById('pub-link-format').value;
+  const url = document.getElementById('pub-link-url').value.trim() || document.getElementById('pub-website').value.trim() || 'https://yoursite.com';
+  const anchor = document.getElementById('pub-link-anchor').value.trim() || 'Your Site';
+  const preview = document.getElementById('link-preview');
+  if (preview) {
+    preview.textContent = format === 'auto'
+      ? `auto → ${formatLink(url, anchor, 'html')}`
+      : formatLink(url, anchor, format);
+  }
+}
+
 // Stop publish button
 document.getElementById('btn-stop-publish').addEventListener('click', () => {
   publishRunning = false;
 });
+
+// Build comment config from UI
+function getCommentConfig(detectedLinkFormat) {
+  const embedLink = document.getElementById('pub-embed-link').checked;
+  let linkFormat = document.getElementById('pub-link-format').value;
+  if (linkFormat === 'auto') linkFormat = detectedLinkFormat || 'html';
+
+  return {
+    commentLength: document.getElementById('pub-comment-length').value,
+    embedLink,
+    linkFormat,
+    linkUrl: document.getElementById('pub-link-url').value.trim() || document.getElementById('pub-website').value.trim(),
+    linkAnchor: document.getElementById('pub-link-anchor').value.trim(),
+    customInstructions: document.getElementById('pub-custom-instructions').value.trim(),
+    promptTemplate: document.getElementById('pub-custom-prompt-toggle').checked
+      ? document.getElementById('pub-custom-prompt').value.trim()
+      : ''
+  };
+}
 
 // Start publishing
 document.getElementById('btn-start-publish').addEventListener('click', async () => {
@@ -460,18 +508,22 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
       try {
         pageInfo = await chrome.tabs.sendMessage(tabId, { type: 'getPageInfo' });
       } catch {
-        pageInfo = { title: bl.sourceTitle, url: bl.sourceUrl, contentExcerpt: '' };
+        pageInfo = { title: bl.sourceTitle, url: bl.sourceUrl, contentExcerpt: '', language: 'en', linkFormat: 'html' };
       }
 
-      // Generate comment with AI
+      addLog(logEntries, `[${pageInfo.language}] ${pageInfo.title}`, 'info');
+
+      // Generate comment with AI - pass page info + user config
+      const commentConfig = getCommentConfig(pageInfo.linkFormat);
       addLog(logEntries, t('publish.generating'), 'info');
       const commentText = await generateComment(apiKey, {
         title: pageInfo.title,
         content: pageInfo.contentExcerpt,
         url: bl.sourceUrl,
+        language: pageInfo.language,
         myWebsiteName: name,
         myWebsiteUrl: website
-      });
+      }, commentConfig);
 
       addLog(logEntries, t('publish.comment', { text: commentText.substring(0, 80) }), 'info');
 

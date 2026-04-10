@@ -474,6 +474,18 @@ hr {
   margin: 16px 0;
 }
 
+/* Link Preview */
+.link-preview {
+  display: block;
+  padding: 6px 10px;
+  background: #f0f2f5;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #555;
+  word-break: break-all;
+  font-family: 'Courier New', monospace;
+}
+
 /* Site Profile Row */
 .site-profile-row {
   display: flex;

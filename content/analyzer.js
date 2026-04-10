@@ -189,9 +189,58 @@
       title: document.title,
       url: window.location.href,
       domain: window.location.hostname,
+      language: detectLanguage(),
+      linkFormat: detectLinkFormat(),
       contentExcerpt: getArticleContent(),
       commentCount: document.querySelectorAll('.comment, .comment-body').length
     };
+  }
+
+  // Detect which link format comments support on this page
+  function detectLinkFormat() {
+    // Check existing comments for link patterns
+    const commentArea = document.querySelector(
+      '#comments, .comments-area, .comment-list, .commentlist, ol.comments, ul.comments'
+    );
+    const commentHtml = commentArea ? commentArea.innerHTML : '';
+
+    // Check for HTML links in comments
+    if (/<a\s+href=/i.test(commentHtml)) return 'html';
+    // Check for BBCode
+    if (/\[url[=\]]/i.test(commentHtml)) return 'bbcode';
+    // Check for Markdown links
+    if (/\[.+?\]\(https?:\/\/.+?\)/.test(commentHtml)) return 'markdown';
+
+    // Check if textarea has a rich text editor or toolbar
+    const toolbar = document.querySelector(
+      '.comment-form .wp-editor-tools, .comment-form .ql-toolbar, .bbcode-toolbar, .markdown-toolbar'
+    );
+    if (toolbar) {
+      const toolbarHtml = toolbar.innerHTML.toLowerCase();
+      if (toolbarHtml.includes('bbcode') || toolbarHtml.includes('[url]')) return 'bbcode';
+      if (toolbarHtml.includes('markdown') || toolbarHtml.includes('**')) return 'markdown';
+    }
+
+    // WordPress default supports HTML in comments
+    if (document.querySelector('meta[name="generator"][content*="WordPress"]') ||
+        document.querySelector('link[href*="wp-content"]')) {
+      return 'html';
+    }
+
+    return 'html'; // default
+  }
+
+  // Detect page language
+  function detectLanguage() {
+    // Check html lang attribute
+    const htmlLang = document.documentElement.lang;
+    if (htmlLang) return htmlLang.split('-')[0].toLowerCase();
+    // Check meta tags
+    const metaLang = document.querySelector('meta[http-equiv="content-language"]');
+    if (metaLang) return metaLang.content.split('-')[0].toLowerCase();
+    const metaOg = document.querySelector('meta[property="og:locale"]');
+    if (metaOg) return metaOg.content.split('_')[0].toLowerCase();
+    return 'en';
   }
 
   // Extract main article content

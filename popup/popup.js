@@ -319,7 +319,7 @@ async function loadSiteProfiles() {
     return;
   }
   checkboxList.innerHTML = profiles.map((p, i) => `
-    <label>
+    <label title="${escapeHtml(p.siteDescription || '')}">
       <input type="checkbox" name="pub-sites" value="${i}">
       <span>${escapeHtml(p.profileName || p.name)}</span>
       <span class="site-url">${escapeHtml(p.website)}</span>
@@ -338,6 +338,7 @@ document.getElementById('pub-site-select').addEventListener('change', async (e) 
     document.getElementById('pub-name').value = '';
     document.getElementById('pub-email').value = '';
     document.getElementById('pub-website').value = '';
+    document.getElementById('pub-site-desc').value = '';
     deleteBtn.hidden = true;
     return;
   }
@@ -347,6 +348,7 @@ document.getElementById('pub-site-select').addEventListener('change', async (e) 
   document.getElementById('pub-name').value = p.name || '';
   document.getElementById('pub-email').value = p.email || '';
   document.getElementById('pub-website').value = p.website || '';
+  document.getElementById('pub-site-desc').value = p.siteDescription || '';
   deleteBtn.hidden = false;
 });
 
@@ -357,6 +359,7 @@ document.getElementById('btn-add-site').addEventListener('click', () => {
   document.getElementById('pub-name').value = '';
   document.getElementById('pub-email').value = '';
   document.getElementById('pub-website').value = '';
+  document.getElementById('pub-site-desc').value = '';
   document.getElementById('btn-delete-site').hidden = true;
 });
 
@@ -366,6 +369,7 @@ document.getElementById('btn-save-site').addEventListener('click', async () => {
   const name = document.getElementById('pub-name').value.trim();
   const email = document.getElementById('pub-email').value.trim();
   const website = document.getElementById('pub-website').value.trim();
+  const siteDescription = document.getElementById('pub-site-desc').value.trim();
 
   if (!name || !email || !website) {
     alert(t('publish.fillRequired'));
@@ -375,7 +379,7 @@ document.getElementById('btn-save-site').addEventListener('click', async () => {
   const profiles = await getSiteProfiles();
   const selectIdx = parseInt(document.getElementById('pub-site-select').value);
 
-  const profile = { profileName: profileName || website, name, email, website };
+  const profile = { profileName: profileName || website, name, email, website, siteDescription };
 
   if (!isNaN(selectIdx) && profiles[selectIdx]) {
     profiles[selectIdx] = profile; // Update existing
@@ -556,8 +560,9 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
           content: pageInfo.contentExcerpt,
           url: bl.sourceUrl,
           language: pageInfo.language,
-          myWebsiteName: name,
-          myWebsiteUrl: website
+          myWebsiteName: site.profileName || name,
+          myWebsiteUrl: website,
+          siteDescription: site.siteDescription || ''
         }, commentConfig);
 
         addLog(logEntries, t('publish.comment', { text: commentText.substring(0, 80) }), 'info');

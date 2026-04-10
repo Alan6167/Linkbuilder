@@ -1,5 +1,8 @@
 // Background Service Worker for Linkbuilder
 
+// Click extension icon to open/close side panel
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+
 // Message handler for communication between popup, content scripts, and background
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const handler = messageHandlers[message.type];

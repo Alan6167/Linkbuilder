@@ -16,10 +16,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 const messageHandlers = {
-  // Open a URL in a new tab and inject content script for analysis
+  // Open a URL in a new tab and wait for it to finish loading
   async analyzeUrl({ url }) {
     const tab = await chrome.tabs.create({ url, active: false });
+    // Wait for the tab to finish loading
+    await waitForTabLoad(tab.id);
     return { tabId: tab.id };
+  },
+
+  // Analyze page using the content script (local, no API needed)
+  async analyzePageViaContentScript({ tabId }) {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, { type: 'analyzePage' });
+      return response;
+    } catch {
+      // Content script not ready, try injecting and running inline
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: analyzePageInline
+      });
+      return results[0]?.result || { hasCommentForm: false, error: 'Script injection failed' };
+    }
+  },
+
+  // Extract comment links via content script
+  async extractLinksViaContentScript({ tabId }) {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, { type: 'extractCommentLinks' });
+      return response;
+    } catch {
+      return { links: [] };
+    }
   },
 
   // Get page HTML from a tab
@@ -33,7 +60,9 @@ const messageHandlers = {
 
   // Close a tab
   async closeTab({ tabId }) {
-    await chrome.tabs.remove(tabId);
+    try {
+      await chrome.tabs.remove(tabId);
+    } catch { /* tab may already be closed */ }
     return { success: true };
   },
 
@@ -58,6 +87,129 @@ const messageHandlers = {
   }
 };
 
+// Wait for a tab to finish loading, with timeout
+function waitForTabLoad(tabId, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      // Resolve anyway - page might be partially loaded but usable
+      resolve();
+    }, timeoutMs);
+
+    function listener(updatedTabId, changeInfo) {
+      if (updatedTabId === tabId && changeInfo.status === 'complete') {
+        clearTimeout(timeout);
+        chrome.tabs.onUpdated.removeListener(listener);
+        // Small extra delay for JS to finish rendering
+        setTimeout(resolve, 500);
+      }
+    }
+
+    // Check if already loaded
+    chrome.tabs.get(tabId).then(tab => {
+      if (tab.status === 'complete') {
+        clearTimeout(timeout);
+        setTimeout(resolve, 500);
+      } else {
+        chrome.tabs.onUpdated.addListener(listener);
+      }
+    }).catch(() => {
+      clearTimeout(timeout);
+      reject(new Error('Tab not found'));
+    });
+  });
+}
+
+// Inline page analysis function (fallback when content script isn't available)
+function analyzePageInline() {
+  const forms = document.querySelectorAll('form');
+  let commentForm = null;
+  let formInfo = {
+    hasCommentForm: false,
+    requiresLogin: false,
+    fields: {},
+    submitButton: null
+  };
+
+  for (const form of forms) {
+    const formId = (form.id || '').toLowerCase();
+    const formClass = (form.className || '').toLowerCase();
+    const formAction = (form.action || '').toLowerCase();
+
+    const isCommentForm =
+      formId.includes('comment') ||
+      formClass.includes('comment') ||
+      formAction.includes('comment') ||
+      form.querySelector('textarea[name*="comment"]') ||
+      form.querySelector('textarea[id*="comment"]') ||
+      form.querySelector('#comment');
+
+    if (isCommentForm) {
+      commentForm = form;
+      break;
+    }
+  }
+
+  if (!commentForm) {
+    const textareas = document.querySelectorAll('textarea');
+    for (const ta of textareas) {
+      const parent = ta.closest('form');
+      if (parent) {
+        commentForm = parent;
+        break;
+      }
+    }
+  }
+
+  if (!commentForm) {
+    const loginIndicators = document.querySelectorAll(
+      'a[href*="login"], a[href*="register"], a[href*="sign-in"], .login-required, .must-log-in'
+    );
+    if (loginIndicators.length > 0) {
+      formInfo.requiresLogin = true;
+    }
+    return formInfo;
+  }
+
+  formInfo.hasCommentForm = true;
+
+  function getSelector(el) {
+    if (el.id) return `#${el.id}`;
+    if (el.name) return `[name="${el.name}"]`;
+    return null;
+  }
+
+  function findInput(patterns) {
+    for (const p of patterns) {
+      let el = commentForm.querySelector(`input[name*="${p}" i]`)
+        || commentForm.querySelector(`input[id*="${p}" i]`)
+        || commentForm.querySelector(`input[placeholder*="${p}" i]`);
+      if (el) return { selector: getSelector(el), name: el.name || el.id, type: el.type };
+    }
+    return null;
+  }
+
+  formInfo.fields = {
+    name: findInput(['author', 'name', 'commenter', 'your-name']),
+    email: findInput(['email', 'mail', 'e-mail']),
+    website: findInput(['url', 'website', 'web', 'site', 'homepage']),
+    comment: (() => {
+      const ta = commentForm.querySelector('textarea');
+      return ta ? { selector: getSelector(ta), name: ta.name || ta.id } : null;
+    })()
+  };
+
+  const submitBtn = commentForm.querySelector('input[type="submit"], button[type="submit"], button.submit, #submit');
+  if (submitBtn) {
+    formInfo.submitButton = {
+      selector: getSelector(submitBtn),
+      text: submitBtn.value || submitBtn.textContent
+    };
+  }
+
+  return formInfo;
+}
+
 // Injected function: fill form fields
 function fillForm(formData, fieldSelectors) {
   const results = {};
@@ -66,7 +218,6 @@ function fillForm(formData, fieldSelectors) {
     const selector = fieldSelectors[field];
     if (!selector) continue;
 
-    // Try CSS selector first, then name attribute
     let element = null;
     if (selector.selector) {
       element = document.querySelector(selector.selector);
@@ -96,14 +247,12 @@ function clickSubmit(submitSelector) {
     button = document.querySelector(submitSelector.selector);
   }
 
-  // Fallback: find common submit buttons
   if (!button) {
     const candidates = [
       'input[type="submit"]',
       'button[type="submit"]',
       '#submit',
       '.submit',
-      'button:has(> span:contains("Post"))',
       'input[value*="Submit"]',
       'input[value*="Post"]',
       'button[name="submit"]'

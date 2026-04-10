@@ -82,6 +82,7 @@
               <option value="commented" data-i18n="backlinks.commented">已评论</option>
             </select>
             <button id="btn-analyze-all" class="btn btn-small" data-i18n="backlinks.analyzeAll">全部分析</button>
+            <button id="btn-stop-analyze" class="btn btn-small btn-danger" hidden data-i18n="backlinks.stop">停止</button>
           </div>
         </div>
 
@@ -102,18 +103,40 @@
       <div class="section">
         <h2 data-i18n="publish.title">发布评论</h2>
 
+        <!-- Site Profiles -->
         <div class="form-group">
-          <label data-i18n="publish.name">你的昵称</label>
-          <input type="text" id="pub-name" placeholder="John Doe">
+          <label data-i18n="publish.siteProfile">网站配置</label>
+          <div class="site-profile-row">
+            <select id="pub-site-select"></select>
+            <button id="btn-add-site" class="btn btn-small" data-i18n="publish.addSite">+ 新增</button>
+          </div>
         </div>
-        <div class="form-group">
-          <label data-i18n="publish.email">你的邮箱</label>
-          <input type="email" id="pub-email" placeholder="john@example.com">
+
+        <div id="site-form">
+          <div class="form-group">
+            <label data-i18n="publish.siteName">配置名称</label>
+            <input type="text" id="pub-profile-name" data-i18n-placeholder="publish.siteNamePlaceholder" placeholder="如：我的游戏站">
+          </div>
+          <div class="form-group">
+            <label data-i18n="publish.name">你的昵称</label>
+            <input type="text" id="pub-name" placeholder="John Doe">
+          </div>
+          <div class="form-group">
+            <label data-i18n="publish.email">你的邮箱</label>
+            <input type="email" id="pub-email" placeholder="john@example.com">
+          </div>
+          <div class="form-group">
+            <label data-i18n="publish.website">你的网站 URL</label>
+            <input type="url" id="pub-website" placeholder="https://yoursite.com">
+          </div>
+          <div class="btn-group">
+            <button id="btn-save-site" class="btn btn-small" data-i18n="publish.saveSite">保存配置</button>
+            <button id="btn-delete-site" class="btn btn-small btn-danger" hidden data-i18n="publish.deleteSite">删除</button>
+          </div>
         </div>
-        <div class="form-group">
-          <label data-i18n="publish.website">你的网站 URL</label>
-          <input type="url" id="pub-website" placeholder="https://yoursite.com">
-        </div>
+
+        <hr>
+
         <div class="form-group">
           <label data-i18n="publish.mode">发布模式</label>
           <select id="pub-mode">
@@ -123,6 +146,7 @@
         </div>
 
         <button id="btn-start-publish" class="btn btn-primary btn-full" data-i18n="publish.start">开始发布</button>
+        <button id="btn-stop-publish" class="btn btn-danger btn-full" hidden data-i18n="publish.stop">停止发布</button>
 
         <div id="publish-log" class="log-area" hidden>
           <h3 data-i18n="publish.log">发布日志</h3>

@@ -449,6 +449,21 @@ hr {
   margin: 16px 0;
 }
 
+/* Site Profile Row */
+.site-profile-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.site-profile-row select {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
   width: 4px;

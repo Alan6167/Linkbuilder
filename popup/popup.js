@@ -1,6 +1,6 @@
 import { STORES, addRecords, getAllRecords, updateRecord, clearStore, getRecordCount, getSetting, setSetting } from '../lib/db.js';
 import { parseRow, filterBacklinks, getFilterStats, DEFAULT_FILTER_CONFIG } from '../lib/filter.js';
-import { generateComment, analyzePageForComments } from '../lib/gemini.js';
+import { generateComment } from '../lib/gemini.js';
 import { t, setLanguage, getLanguage } from '../lib/i18n.js';
 
 // ========== State ==========
@@ -8,6 +8,8 @@ let parsedBacklinks = [];
 let filteredBacklinks = [];
 let currentPage = 1;
 const PAGE_SIZE = 20;
+let analyzeRunning = false;
+let publishRunning = false;
 
 // ========== i18n ==========
 document.getElementById('lang-toggle').addEventListener('click', async () => {
@@ -31,6 +33,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
 
     if (tab.dataset.tab === 'backlinks') loadBacklinksList();
+    if (tab.dataset.tab === 'publish') loadSiteProfiles();
     if (tab.dataset.tab === 'settings') loadSettings();
   });
 });
@@ -85,23 +88,18 @@ async function processFile(file) {
     progressFill.style.width = '50%';
     progressText.textContent = t('import.filtering');
 
-    // Skip header row
     const dataRows = rows.slice(1).filter(row => row.length >= 19);
-
-    // Parse all rows
     parsedBacklinks = dataRows.map(row => parseRow(row));
 
     progressFill.style.width = '70%';
     progressText.textContent = t('import.applying');
 
-    // Get filter config from settings
     const config = await getFilterConfig();
     filteredBacklinks = filterBacklinks(parsedBacklinks, config);
 
     progressFill.style.width = '100%';
     progressText.textContent = t('import.done');
 
-    // Show stats
     const stats = getFilterStats(parsedBacklinks, filteredBacklinks);
     document.getElementById('stat-total').textContent = stats.totalImported;
     document.getElementById('stat-filtered').textContent = stats.afterFilter;
@@ -116,7 +114,6 @@ async function processFile(file) {
   }
 }
 
-// Save imported data to IndexedDB
 document.getElementById('btn-save-import').addEventListener('click', async () => {
   if (filteredBacklinks.length === 0) return;
 
@@ -154,7 +151,6 @@ async function loadBacklinksList() {
     return;
   }
 
-  // Pagination
   const totalPages = Math.ceil(backlinks.length / PAGE_SIZE);
   const start = (currentPage - 1) * PAGE_SIZE;
   const pageItems = backlinks.slice(start, start + PAGE_SIZE);
@@ -176,7 +172,6 @@ async function loadBacklinksList() {
     </div>
   `).join('');
 
-  // Pagination controls
   const pagination = document.getElementById('pagination');
   if (totalPages > 1) {
     pagination.hidden = false;
@@ -202,14 +197,13 @@ document.getElementById('btn-next').addEventListener('click', () => {
   loadBacklinksList();
 });
 
-// Analyze all pending backlinks
-document.getElementById('btn-analyze-all').addEventListener('click', async () => {
-  const apiKey = await getSetting('geminiApiKey');
-  if (!apiKey) {
-    alert(t('settings.noApiKey'));
-    return;
-  }
+// Stop analyze button
+document.getElementById('btn-stop-analyze').addEventListener('click', () => {
+  analyzeRunning = false;
+});
 
+// Analyze all pending backlinks - uses LOCAL content script (no API needed)
+document.getElementById('btn-analyze-all').addEventListener('click', async () => {
   const backlinks = await getAllRecords(STORES.BACKLINKS);
   const pending = backlinks.filter(b => b.status === 'pending');
 
@@ -218,56 +212,195 @@ document.getElementById('btn-analyze-all').addEventListener('click', async () =>
     return;
   }
 
-  const btn = document.getElementById('btn-analyze-all');
-  btn.disabled = true;
+  const btnAnalyze = document.getElementById('btn-analyze-all');
+  const btnStop = document.getElementById('btn-stop-analyze');
+  btnAnalyze.disabled = true;
+  btnStop.hidden = false;
+  analyzeRunning = true;
+
+  let stats = { commentable: 0, notCommentable: 0, error: 0 };
 
   for (let i = 0; i < pending.length; i++) {
-    btn.textContent = t('backlinks.analyzing', { current: i + 1, total: pending.length });
+    if (!analyzeRunning) {
+      btnAnalyze.textContent = t('backlinks.stopped');
+      break;
+    }
+
+    btnAnalyze.textContent = t('backlinks.analyzing', { current: i + 1, total: pending.length });
     const bl = pending[i];
+    let tabId = null;
 
     try {
       bl.status = 'analyzing';
       await updateRecord(STORES.BACKLINKS, bl);
 
-      // Open tab, get HTML, analyze with AI
-      const { tabId } = await chrome.runtime.sendMessage({ type: 'analyzeUrl', url: bl.sourceUrl });
+      // Open tab and WAIT for full page load (not just 3s)
+      const result = await chrome.runtime.sendMessage({ type: 'analyzeUrl', url: bl.sourceUrl });
+      tabId = result.tabId;
 
-      // Wait for page to load
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      // Use content script for LOCAL analysis (no API call)
+      const analysis = await chrome.runtime.sendMessage({ type: 'analyzePageViaContentScript', tabId });
 
-      const { html } = await chrome.runtime.sendMessage({ type: 'getPageHtml', tabId });
-
-      if (html) {
-        const analysis = await analyzePageForComments(apiKey, html, bl.sourceUrl);
+      if (analysis && !analysis.error) {
         bl.commentFormAnalysis = analysis;
         bl.status = analysis.hasCommentForm && !analysis.requiresLogin ? 'commentable' : 'not_commentable';
-
-        // Extract comment links for snowball discovery
-        try {
-          const links = await chrome.tabs.sendMessage(tabId, { type: 'extractCommentLinks' });
-          if (links?.links?.length > 0) {
-            await addRecords(STORES.DISCOVERED_SITES, links.links);
-          }
-        } catch { /* content script may not be ready */ }
+        stats[bl.status === 'commentable' ? 'commentable' : 'notCommentable']++;
       } else {
         bl.status = 'error';
+        bl.errorMessage = analysis?.error || 'Analysis failed';
+        stats.error++;
       }
 
-      await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
+      // Extract comment links for snowball discovery
+      const linksResult = await chrome.runtime.sendMessage({ type: 'extractLinksViaContentScript', tabId });
+      if (linksResult?.links?.length > 0) {
+        try { await addRecords(STORES.DISCOVERED_SITES, linksResult.links); } catch { /* duplicates ok */ }
+      }
+
     } catch (err) {
       bl.status = 'error';
       bl.errorMessage = err.message;
+      stats.error++;
+    }
+
+    // Always close the tab
+    if (tabId) {
+      try { await chrome.runtime.sendMessage({ type: 'closeTab', tabId }); } catch {}
     }
 
     await updateRecord(STORES.BACKLINKS, bl);
     await loadBacklinksList();
   }
 
-  btn.textContent = t('backlinks.analyzeAll');
-  btn.disabled = false;
+  btnAnalyze.textContent = analyzeRunning
+    ? t('backlinks.analyzeComplete', stats)
+    : t('backlinks.stopped');
+  btnAnalyze.disabled = false;
+  btnStop.hidden = true;
+  analyzeRunning = false;
+
+  setTimeout(() => {
+    btnAnalyze.textContent = t('backlinks.analyzeAll');
+  }, 3000);
 });
 
-// ========== Publish Tab ==========
+// ========== Publish Tab - Site Profiles ==========
+async function getSiteProfiles() {
+  return (await getSetting('siteProfiles')) || [];
+}
+
+async function saveSiteProfiles(profiles) {
+  await setSetting('siteProfiles', profiles);
+}
+
+async function loadSiteProfiles() {
+  const profiles = await getSiteProfiles();
+  const select = document.getElementById('pub-site-select');
+  const deleteBtn = document.getElementById('btn-delete-site');
+
+  select.innerHTML = `<option value="">${t('publish.selectSite')}</option>`;
+  profiles.forEach((p, i) => {
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = p.profileName || p.website;
+    select.appendChild(opt);
+  });
+
+  // Clear form
+  document.getElementById('pub-profile-name').value = '';
+  document.getElementById('pub-name').value = '';
+  document.getElementById('pub-email').value = '';
+  document.getElementById('pub-website').value = '';
+  deleteBtn.hidden = true;
+}
+
+// Select a site profile
+document.getElementById('pub-site-select').addEventListener('change', async (e) => {
+  const profiles = await getSiteProfiles();
+  const idx = parseInt(e.target.value);
+  const deleteBtn = document.getElementById('btn-delete-site');
+
+  if (isNaN(idx) || !profiles[idx]) {
+    document.getElementById('pub-profile-name').value = '';
+    document.getElementById('pub-name').value = '';
+    document.getElementById('pub-email').value = '';
+    document.getElementById('pub-website').value = '';
+    deleteBtn.hidden = true;
+    return;
+  }
+
+  const p = profiles[idx];
+  document.getElementById('pub-profile-name').value = p.profileName || '';
+  document.getElementById('pub-name').value = p.name || '';
+  document.getElementById('pub-email').value = p.email || '';
+  document.getElementById('pub-website').value = p.website || '';
+  deleteBtn.hidden = false;
+});
+
+// Add new site (clear form)
+document.getElementById('btn-add-site').addEventListener('click', () => {
+  document.getElementById('pub-site-select').value = '';
+  document.getElementById('pub-profile-name').value = '';
+  document.getElementById('pub-name').value = '';
+  document.getElementById('pub-email').value = '';
+  document.getElementById('pub-website').value = '';
+  document.getElementById('btn-delete-site').hidden = true;
+});
+
+// Save site profile
+document.getElementById('btn-save-site').addEventListener('click', async () => {
+  const profileName = document.getElementById('pub-profile-name').value.trim();
+  const name = document.getElementById('pub-name').value.trim();
+  const email = document.getElementById('pub-email').value.trim();
+  const website = document.getElementById('pub-website').value.trim();
+
+  if (!name || !email || !website) {
+    alert(t('publish.fillRequired'));
+    return;
+  }
+
+  const profiles = await getSiteProfiles();
+  const selectIdx = parseInt(document.getElementById('pub-site-select').value);
+
+  const profile = { profileName: profileName || website, name, email, website };
+
+  if (!isNaN(selectIdx) && profiles[selectIdx]) {
+    profiles[selectIdx] = profile; // Update existing
+  } else {
+    profiles.push(profile); // Add new
+  }
+
+  await saveSiteProfiles(profiles);
+  await loadSiteProfiles();
+
+  // Re-select the saved profile
+  const select = document.getElementById('pub-site-select');
+  const newIdx = !isNaN(selectIdx) && selectIdx < profiles.length ? selectIdx : profiles.length - 1;
+  select.value = newIdx;
+  select.dispatchEvent(new Event('change'));
+
+  const btn = document.getElementById('btn-save-site');
+  btn.textContent = t('publish.siteSaved');
+  setTimeout(() => btn.textContent = t('publish.saveSite'), 1500);
+});
+
+// Delete site profile
+document.getElementById('btn-delete-site').addEventListener('click', async () => {
+  const selectIdx = parseInt(document.getElementById('pub-site-select').value);
+  if (isNaN(selectIdx)) return;
+
+  const profiles = await getSiteProfiles();
+  profiles.splice(selectIdx, 1);
+  await saveSiteProfiles(profiles);
+  await loadSiteProfiles();
+});
+
+// Stop publish button
+document.getElementById('btn-stop-publish').addEventListener('click', () => {
+  publishRunning = false;
+});
+
+// Start publishing
 document.getElementById('btn-start-publish').addEventListener('click', async () => {
   const name = document.getElementById('pub-name').value.trim();
   const email = document.getElementById('pub-email').value.trim();
@@ -285,12 +418,6 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
     return;
   }
 
-  // Save publish settings
-  await setSetting('publishName', name);
-  await setSetting('publishEmail', email);
-  await setSetting('publishWebsite', website);
-  await setSetting('publishMode', mode);
-
   const backlinks = await getAllRecords(STORES.BACKLINKS);
   const commentable = backlinks.filter(b => b.status === 'commentable');
 
@@ -304,17 +431,24 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
   logArea.hidden = false;
   logEntries.innerHTML = '';
 
-  const btn = document.getElementById('btn-start-publish');
-  btn.disabled = true;
-  btn.textContent = t('publish.publishing');
+  const btnStart = document.getElementById('btn-start-publish');
+  const btnStop = document.getElementById('btn-stop-publish');
+  btnStart.hidden = true;
+  btnStop.hidden = false;
+  publishRunning = true;
 
   for (const bl of commentable) {
+    if (!publishRunning) {
+      addLog(logEntries, t('backlinks.stopped'), 'error');
+      break;
+    }
+
+    let tabId = null;
     try {
       addLog(logEntries, t('publish.opening', { url: bl.sourceUrl }), 'info');
 
-      // Open the page
-      const { tabId } = await chrome.runtime.sendMessage({ type: 'analyzeUrl', url: bl.sourceUrl });
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      const result = await chrome.runtime.sendMessage({ type: 'analyzeUrl', url: bl.sourceUrl });
+      tabId = result.tabId;
 
       // Get page info for comment generation
       let pageInfo;
@@ -337,25 +471,13 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
       addLog(logEntries, t('publish.comment', { text: commentText.substring(0, 80) }), 'info');
 
       // Fill the form
-      const formData = {
-        name: name,
-        email: email,
-        website: website,
-        comment: commentText
-      };
-
+      const formData = { name, email, website, comment: commentText };
       const fieldSelectors = bl.commentFormAnalysis?.fields || {};
-      await chrome.runtime.sendMessage({
-        type: 'fillCommentForm',
-        tabId,
-        formData,
-        fieldSelectors
-      });
+      await chrome.runtime.sendMessage({ type: 'fillCommentForm', tabId, formData, fieldSelectors });
 
       addLog(logEntries, t('publish.filled'), 'success');
 
       if (mode === 'auto') {
-        // Auto submit
         const submitResult = await chrome.runtime.sendMessage({
           type: 'submitCommentForm',
           tabId,
@@ -370,9 +492,9 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
         }
 
         await new Promise(resolve => setTimeout(resolve, 2000));
-        await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
+        if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
+        tabId = null;
       } else {
-        // Semi-auto: leave tab open for user to review and submit manually
         addLog(logEntries, t('publish.review'), 'info');
       }
 
@@ -381,10 +503,7 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
         backlinkId: bl.id,
         sourceUrl: bl.sourceUrl,
         commentText,
-        name,
-        email,
-        website,
-        mode,
+        name, email, website, mode,
         status: bl.status === 'commented' ? 'published' : 'pending_review',
         publishedAt: new Date().toISOString()
       }]);
@@ -393,11 +512,15 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
 
     } catch (err) {
       addLog(logEntries, t('common.error', { message: err.message }), 'error');
+      if (tabId) {
+        try { await chrome.runtime.sendMessage({ type: 'closeTab', tabId }); } catch {}
+      }
     }
   }
 
-  btn.textContent = t('publish.start');
-  btn.disabled = false;
+  btnStart.hidden = false;
+  btnStop.hidden = true;
+  publishRunning = false;
   addLog(logEntries, t('publish.done', { count: commentable.length }), 'success');
 });
 
@@ -414,15 +537,6 @@ async function loadSettings() {
   const apiKey = await getSetting('geminiApiKey');
   if (apiKey) document.getElementById('setting-api-key').value = apiKey;
 
-  const pubName = await getSetting('publishName');
-  if (pubName) document.getElementById('pub-name').value = pubName;
-
-  const pubEmail = await getSetting('publishEmail');
-  if (pubEmail) document.getElementById('pub-email').value = pubEmail;
-
-  const pubWebsite = await getSetting('publishWebsite');
-  if (pubWebsite) document.getElementById('pub-website').value = pubWebsite;
-
   // Load language setting
   const lang = await getSetting('language');
   if (lang) {
@@ -430,6 +544,15 @@ async function loadSettings() {
     document.getElementById('setting-language').value = lang;
   } else {
     setLanguage('zh');
+  }
+
+  // Load publish info from first site profile (backwards compat)
+  const profiles = await getSiteProfiles();
+  if (profiles.length > 0) {
+    const p = profiles[0];
+    document.getElementById('pub-name').value = p.name || '';
+    document.getElementById('pub-email').value = p.email || '';
+    document.getElementById('pub-website').value = p.website || '';
   }
 
   // Load DB stats
@@ -450,21 +573,18 @@ document.getElementById('btn-save-settings').addEventListener('click', async () 
   setTimeout(() => btn.textContent = t('settings.save'), 1500);
 });
 
-// Export backlinks as CSV
 document.getElementById('btn-export-backlinks').addEventListener('click', async () => {
   const backlinks = await getAllRecords(STORES.BACKLINKS);
   downloadCSV(backlinks, 'backlinks-export.csv',
     ['sourceUrl', 'sourceTitle', 'sourceDomain', 'ascore', 'status', 'ugc', 'nofollow', 'isBlogUrl', 'externalLinks']);
 });
 
-// Export discovered sites as CSV
 document.getElementById('btn-export-discovered').addEventListener('click', async () => {
   const sites = await getAllRecords(STORES.DISCOVERED_SITES);
   downloadCSV(sites, 'discovered-sites.csv',
     ['domain', 'url', 'anchorText', 'discoveredFrom', 'discoveredAt']);
 });
 
-// Clear all data
 document.getElementById('btn-clear-data').addEventListener('click', async () => {
   if (!confirm(t('settings.clearConfirm'))) return;
 
@@ -526,4 +646,5 @@ async function getFilterConfig() {
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
   loadSettings();
+  loadSiteProfiles();
 });

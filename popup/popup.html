@@ -105,7 +105,7 @@
       <div class="section">
         <h2 data-i18n="publish.title">发布评论</h2>
 
-        <!-- Site Profiles -->
+        <!-- Site Profiles: select for editing -->
         <div class="form-group">
           <label data-i18n="publish.siteProfile">网站配置</label>
           <div class="site-profile-row">
@@ -135,6 +135,21 @@
             <button id="btn-save-site" class="btn btn-small" data-i18n="publish.saveSite">保存配置</button>
             <button id="btn-delete-site" class="btn btn-small btn-danger" hidden data-i18n="publish.deleteSite">删除</button>
           </div>
+        </div>
+
+        <hr>
+
+        <!-- Multi-site selection for publishing -->
+        <div class="form-group">
+          <label data-i18n="publish.selectSites">选择要发布的网站（可多选）</label>
+          <div id="pub-site-checkboxes" class="checkbox-list"></div>
+          <p class="hint" data-i18n="publish.multiSiteHint">选多个时，每个博客页面会轮流用不同网站发布评论</p>
+        </div>
+
+        <div class="form-group">
+          <label data-i18n="publish.publishDelay">发布间隔（秒）</label>
+          <input type="number" id="pub-delay" value="30" min="5" max="300">
+          <p class="hint" data-i18n="publish.delayHint">同一博客页面发多条评论的间隔时间，避免被屏蔽</p>
         </div>
 
         <hr>

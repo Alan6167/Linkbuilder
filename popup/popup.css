@@ -488,6 +488,47 @@ hr {
   font-family: 'Courier New', monospace;
 }
 
+/* Checkbox List */
+.checkbox-list {
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 8px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.checkbox-list label {
+  display: flex;
+  align-items: center;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  gap: 6px;
+}
+
+.checkbox-list label:hover {
+  background: #f5f5f5;
+}
+
+.checkbox-list .site-url {
+  color: #888;
+  font-size: 10px;
+  margin-left: auto;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.checkbox-list .empty-hint {
+  color: #999;
+  font-size: 11px;
+  text-align: center;
+  padding: 8px;
+}
+
 /* Site Profile Row */
 .site-profile-row {
   display: flex;

@@ -295,9 +295,10 @@ async function saveSiteProfiles(profiles) {
 
 async function loadSiteProfiles() {
   const profiles = await getSiteProfiles();
+
+  // Populate the edit dropdown
   const select = document.getElementById('pub-site-select');
   const deleteBtn = document.getElementById('btn-delete-site');
-
   select.innerHTML = `<option value="">${t('publish.selectSite')}</option>`;
   profiles.forEach((p, i) => {
     const opt = document.createElement('option');
@@ -305,13 +306,25 @@ async function loadSiteProfiles() {
     opt.textContent = p.profileName || p.website;
     select.appendChild(opt);
   });
-
-  // Clear form
   document.getElementById('pub-profile-name').value = '';
   document.getElementById('pub-name').value = '';
   document.getElementById('pub-email').value = '';
   document.getElementById('pub-website').value = '';
   deleteBtn.hidden = true;
+
+  // Populate the multi-select checkboxes for publishing
+  const checkboxList = document.getElementById('pub-site-checkboxes');
+  if (profiles.length === 0) {
+    checkboxList.innerHTML = `<div class="empty-hint">${t('publish.noSites')}</div>`;
+    return;
+  }
+  checkboxList.innerHTML = profiles.map((p, i) => `
+    <label>
+      <input type="checkbox" name="pub-sites" value="${i}">
+      <span>${escapeHtml(p.profileName || p.name)}</span>
+      <span class="site-url">${escapeHtml(p.website)}</span>
+    </label>
+  `).join('');
 }
 
 // Select a site profile
@@ -450,15 +463,18 @@ function getCommentConfig(detectedLinkFormat) {
 
 // Start publishing
 document.getElementById('btn-start-publish').addEventListener('click', async () => {
-  const name = document.getElementById('pub-name').value.trim();
-  const email = document.getElementById('pub-email').value.trim();
-  const website = document.getElementById('pub-website').value.trim();
-  const mode = document.getElementById('pub-mode').value;
+  // Get selected site profiles
+  const profiles = await getSiteProfiles();
+  const checked = [...document.querySelectorAll('input[name="pub-sites"]:checked')];
+  const selectedSites = checked.map(cb => profiles[parseInt(cb.value)]).filter(Boolean);
 
-  if (!name || !email || !website) {
-    alert(t('publish.fillRequired'));
+  if (selectedSites.length === 0) {
+    alert(t('publish.noSitesSelected'));
     return;
   }
+
+  const mode = document.getElementById('pub-mode').value;
+  const delay = Math.max(5, parseInt(document.getElementById('pub-delay').value) || 30);
 
   const apiKey = await getSetting('geminiApiKey');
   if (!apiKey) {
@@ -479,10 +495,15 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
   logArea.hidden = false;
   logEntries.innerHTML = '';
 
-  // Set up rate limit notification
   setRateLimitCallback((seconds) => {
     addLog(logEntries, t('publish.rateLimit', { seconds }), 'info');
   });
+
+  addLog(logEntries, t('publish.startInfo', {
+    sites: selectedSites.length,
+    pages: commentable.length,
+    delay
+  }), 'info');
 
   const btnStart = document.getElementById('btn-start-publish');
   const btnStop = document.getElementById('btn-stop-publish');
@@ -490,7 +511,7 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
   btnStop.hidden = false;
   publishRunning = true;
 
-  let pubStats = { success: 0, failed: 0, skipped: 0 };
+  let pubStats = { success: 0, failed: 0 };
 
   for (let i = 0; i < commentable.length; i++) {
     if (!publishRunning) {
@@ -499,98 +520,114 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
     }
 
     const bl = commentable[i];
-    addLog(logEntries, `--- [${i + 1}/${commentable.length}] ---`, 'info');
 
-    let tabId = null;
-    try {
-      addLog(logEntries, t('publish.opening', { url: bl.sourceUrl }), 'info');
+    // Each blog page gets comments from all selected sites (rotate)
+    for (let s = 0; s < selectedSites.length; s++) {
+      if (!publishRunning) break;
 
-      const result = await chrome.runtime.sendMessage({ type: 'analyzeUrl', url: bl.sourceUrl });
-      tabId = result.tabId;
+      const site = selectedSites[s];
+      const { name, email, website } = site;
 
-      // Get page info for comment generation
-      let pageInfo;
+      addLog(logEntries, `--- [${i + 1}/${commentable.length}] ${site.profileName} ---`, 'info');
+
+      let tabId = null;
       try {
-        pageInfo = await chrome.tabs.sendMessage(tabId, { type: 'getPageInfo' });
-      } catch {
-        pageInfo = { title: bl.sourceTitle, url: bl.sourceUrl, contentExcerpt: '', language: 'en', linkFormat: 'html' };
-      }
+        addLog(logEntries, t('publish.opening', { url: bl.sourceUrl }), 'info');
 
-      addLog(logEntries, `[${pageInfo.language}] ${pageInfo.title}`, 'info');
+        const result = await chrome.runtime.sendMessage({ type: 'analyzeUrl', url: bl.sourceUrl });
+        tabId = result.tabId;
 
-      // Generate comment with AI - pass page info + user config
-      const commentConfig = getCommentConfig(pageInfo.linkFormat);
-      addLog(logEntries, t('publish.generating'), 'info');
-      const commentText = await generateComment(apiKey, {
-        title: pageInfo.title,
-        content: pageInfo.contentExcerpt,
-        url: bl.sourceUrl,
-        language: pageInfo.language,
-        myWebsiteName: name,
-        myWebsiteUrl: website
-      }, commentConfig);
-
-      addLog(logEntries, t('publish.comment', { text: commentText.substring(0, 80) }), 'info');
-
-      // Fill the form
-      const formData = { name, email, website, comment: commentText };
-      const fieldSelectors = bl.commentFormAnalysis?.fields || {};
-      await chrome.runtime.sendMessage({ type: 'fillCommentForm', tabId, formData, fieldSelectors });
-
-      addLog(logEntries, t('publish.filled'), 'success');
-
-      if (mode === 'auto') {
-        const submitResult = await chrome.runtime.sendMessage({
-          type: 'submitCommentForm',
-          tabId,
-          submitSelector: bl.commentFormAnalysis?.submitButton
-        });
-
-        if (submitResult.success) {
-          addLog(logEntries, t('publish.submitted'), 'success');
-          bl.status = 'commented';
-          bl.commentedAt = new Date().toISOString();
-          bl.commentedWith = { name, email, website };
-          pubStats.success++;
-        } else {
-          addLog(logEntries, t('publish.submitFailed', { error: submitResult.error || 'unknown' }), 'error');
-          bl.status = 'publish_failed';
-          bl.errorMessage = submitResult.error || 'Submit button not found';
-          pubStats.failed++;
+        let pageInfo;
+        try {
+          pageInfo = await chrome.tabs.sendMessage(tabId, { type: 'getPageInfo' });
+        } catch {
+          pageInfo = { title: bl.sourceTitle, url: bl.sourceUrl, contentExcerpt: '', language: 'en', linkFormat: 'html' };
         }
 
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
-        tabId = null;
-      } else {
-        // Semi-auto: mark as pending review, leave tab open
-        bl.status = 'pending_review';
-        addLog(logEntries, t('publish.review'), 'info');
-        pubStats.success++;
+        addLog(logEntries, `[${pageInfo.language}] ${pageInfo.title}`, 'info');
+
+        const commentConfig = getCommentConfig(pageInfo.linkFormat);
+        // Override link URL with current site's website
+        commentConfig.linkUrl = commentConfig.linkUrl || website;
+
+        addLog(logEntries, t('publish.generating'), 'info');
+        const commentText = await generateComment(apiKey, {
+          title: pageInfo.title,
+          content: pageInfo.contentExcerpt,
+          url: bl.sourceUrl,
+          language: pageInfo.language,
+          myWebsiteName: name,
+          myWebsiteUrl: website
+        }, commentConfig);
+
+        addLog(logEntries, t('publish.comment', { text: commentText.substring(0, 80) }), 'info');
+
+        const formData = { name, email, website, comment: commentText };
+        const fieldSelectors = bl.commentFormAnalysis?.fields || {};
+        await chrome.runtime.sendMessage({ type: 'fillCommentForm', tabId, formData, fieldSelectors });
+
+        addLog(logEntries, t('publish.filled'), 'success');
+
+        if (mode === 'auto') {
+          const submitResult = await chrome.runtime.sendMessage({
+            type: 'submitCommentForm',
+            tabId,
+            submitSelector: bl.commentFormAnalysis?.submitButton
+          });
+
+          if (submitResult.success) {
+            addLog(logEntries, t('publish.submitted'), 'success');
+            pubStats.success++;
+          } else {
+            addLog(logEntries, t('publish.submitFailed', { error: submitResult.error || 'unknown' }), 'error');
+            pubStats.failed++;
+          }
+
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
+          tabId = null;
+        } else {
+          addLog(logEntries, t('publish.review'), 'info');
+          pubStats.success++;
+        }
+
+        // Save comment record
+        await addRecords(STORES.COMMENTS, [{
+          backlinkId: bl.id,
+          sourceUrl: bl.sourceUrl,
+          sourceDomain: bl.sourceDomain,
+          commentText,
+          name, email, website, mode,
+          siteProfile: site.profileName,
+          status: mode === 'auto' ? 'published' : 'pending_review',
+          publishedAt: new Date().toISOString()
+        }]);
+
+      } catch (err) {
+        addLog(logEntries, t('common.error', { message: err.message }), 'error');
+        pubStats.failed++;
+        if (tabId) {
+          try { await chrome.runtime.sendMessage({ type: 'closeTab', tabId }); } catch {}
+        }
       }
 
-      // Save comment record
-      await addRecords(STORES.COMMENTS, [{
-        backlinkId: bl.id,
-        sourceUrl: bl.sourceUrl,
-        sourceDomain: bl.sourceDomain,
-        commentText,
-        name, email, website, mode,
-        status: bl.status,
-        publishedAt: new Date().toISOString()
-      }]);
-
-      await updateRecord(STORES.BACKLINKS, bl);
-
-    } catch (err) {
-      addLog(logEntries, t('common.error', { message: err.message }), 'error');
-      bl.status = 'publish_failed';
-      bl.errorMessage = err.message;
-      pubStats.failed++;
-      await updateRecord(STORES.BACKLINKS, bl);
-      if (tabId) {
-        try { await chrome.runtime.sendMessage({ type: 'closeTab', tabId }); } catch {}
+      // Delay between sites on the same page
+      if (s < selectedSites.length - 1 && publishRunning) {
+        addLog(logEntries, t('publish.waiting', { seconds: delay }), 'info');
+        await new Promise(resolve => setTimeout(resolve, delay * 1000));
       }
+    }
+
+    // Update backlink status after all sites processed
+    bl.status = pubStats.failed === 0 ? 'commented' : 'publish_failed';
+    bl.commentedAt = new Date().toISOString();
+    bl.commentedWith = selectedSites.map(s => s.profileName);
+    await updateRecord(STORES.BACKLINKS, bl);
+
+    // Delay between different blog pages
+    if (i < commentable.length - 1 && publishRunning) {
+      addLog(logEntries, t('publish.waiting', { seconds: delay }), 'info');
+      await new Promise(resolve => setTimeout(resolve, delay * 1000));
     }
   }
 
@@ -598,7 +635,7 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
   btnStop.hidden = true;
   publishRunning = false;
   addLog(logEntries, t('publish.summary', {
-    total: commentable.length,
+    total: commentable.length * selectedSites.length,
     success: pubStats.success,
     failed: pubStats.failed
   }), pubStats.failed > 0 ? 'error' : 'success');

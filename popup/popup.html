@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Linkbuilder</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Linkbuilder</h1>
+      <p class="subtitle">Blog Comment Backlink Tool</p>
+    </header>
+
+    <!-- Tab Navigation -->
+    <nav class="tabs">
+      <button class="tab active" data-tab="import">Import</button>
+      <button class="tab" data-tab="backlinks">Backlinks</button>
+      <button class="tab" data-tab="publish">Publish</button>
+      <button class="tab" data-tab="settings">Settings</button>
+    </nav>
+
+    <!-- Import Tab -->
+    <div id="tab-import" class="tab-content active">
+      <div class="section">
+        <h2>Import Semrush Backlinks</h2>
+        <p class="hint">Upload .xlsx file exported from Semrush backlink analysis</p>
+
+        <div class="upload-area" id="upload-area">
+          <div class="upload-icon">+</div>
+          <p>Click or drag .xlsx file here</p>
+          <input type="file" id="file-input" accept=".xlsx,.xls,.csv" hidden>
+        </div>
+
+        <div id="import-progress" class="progress-section" hidden>
+          <div class="progress-bar">
+            <div class="progress-fill" id="progress-fill"></div>
+          </div>
+          <p id="progress-text">Processing...</p>
+        </div>
+
+        <div id="import-stats" class="stats-section" hidden>
+          <h3>Import Results</h3>
+          <div class="stats-grid">
+            <div class="stat">
+              <span class="stat-value" id="stat-total">0</span>
+              <span class="stat-label">Total rows</span>
+            </div>
+            <div class="stat">
+              <span class="stat-value" id="stat-filtered">0</span>
+              <span class="stat-label">After filter</span>
+            </div>
+            <div class="stat">
+              <span class="stat-value" id="stat-ugc">0</span>
+              <span class="stat-label">UGC links</span>
+            </div>
+            <div class="stat">
+              <span class="stat-value" id="stat-blog">0</span>
+              <span class="stat-label">Blog URLs</span>
+            </div>
+          </div>
+          <button id="btn-save-import" class="btn btn-primary">Save to Database</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Backlinks Tab -->
+    <div id="tab-backlinks" class="tab-content">
+      <div class="section">
+        <div class="toolbar">
+          <h2>Backlink Resources</h2>
+          <div class="toolbar-actions">
+            <select id="filter-status">
+              <option value="all">All Status</option>
+              <option value="pending">Pending</option>
+              <option value="commentable">Commentable</option>
+              <option value="not_commentable">Not Commentable</option>
+              <option value="commented">Commented</option>
+            </select>
+            <button id="btn-analyze-all" class="btn btn-small">Analyze All</button>
+          </div>
+        </div>
+
+        <div id="backlinks-list" class="list">
+          <p class="empty-state">No backlinks imported yet. Go to Import tab to upload data.</p>
+        </div>
+
+        <div class="pagination" id="pagination" hidden>
+          <button id="btn-prev" class="btn btn-small">&lt; Prev</button>
+          <span id="page-info">Page 1</span>
+          <button id="btn-next" class="btn btn-small">Next &gt;</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Publish Tab -->
+    <div id="tab-publish" class="tab-content">
+      <div class="section">
+        <h2>Publish Comments</h2>
+
+        <div class="form-group">
+          <label>Your Name</label>
+          <input type="text" id="pub-name" placeholder="John Doe">
+        </div>
+        <div class="form-group">
+          <label>Your Email</label>
+          <input type="email" id="pub-email" placeholder="john@example.com">
+        </div>
+        <div class="form-group">
+          <label>Your Website URL</label>
+          <input type="url" id="pub-website" placeholder="https://yoursite.com">
+        </div>
+        <div class="form-group">
+          <label>Publishing Mode</label>
+          <select id="pub-mode">
+            <option value="semi-auto">Semi-Auto (Review before submit)</option>
+            <option value="auto">Full Auto (Auto submit)</option>
+          </select>
+        </div>
+
+        <button id="btn-start-publish" class="btn btn-primary btn-full">Start Publishing</button>
+
+        <div id="publish-log" class="log-area" hidden>
+          <h3>Publishing Log</h3>
+          <div id="log-entries"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings Tab -->
+    <div id="tab-settings" class="tab-content">
+      <div class="section">
+        <h2>Settings</h2>
+
+        <div class="form-group">
+          <label>Gemini API Key</label>
+          <input type="password" id="setting-api-key" placeholder="Enter your Gemini API key">
+          <p class="hint">Get your key from Google AI Studio</p>
+        </div>
+
+        <div class="form-group">
+          <label>Min Page Ascore</label>
+          <input type="number" id="setting-min-ascore" value="1" min="0" max="100">
+        </div>
+
+        <div class="form-group">
+          <label>Max External Links</label>
+          <input type="number" id="setting-max-external" value="5000" min="100">
+        </div>
+
+        <div class="form-group">
+          <label>
+            <input type="checkbox" id="setting-filter-lost" checked> Filter lost links
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label>
+            <input type="checkbox" id="setting-filter-spam" checked> Filter SPAM domains
+          </label>
+        </div>
+
+        <button id="btn-save-settings" class="btn btn-primary">Save Settings</button>
+
+        <hr>
+
+        <h3>Data Management</h3>
+        <div class="btn-group">
+          <button id="btn-export-backlinks" class="btn btn-small">Export Backlinks</button>
+          <button id="btn-export-discovered" class="btn btn-small">Export Discovered Sites</button>
+          <button id="btn-clear-data" class="btn btn-small btn-danger">Clear All Data</button>
+        </div>
+
+        <div id="db-stats" class="stats-grid" style="margin-top: 12px;">
+          <div class="stat">
+            <span class="stat-value" id="db-backlinks">0</span>
+            <span class="stat-label">Backlinks</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value" id="db-comments">0</span>
+            <span class="stat-label">Comments</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value" id="db-sites">0</span>
+            <span class="stat-label">Discovered</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="../lib/xlsx.full.min.js"></script>
+  <script src="popup.js" type="module"></script>
+</body>
+</html>

@@ -263,9 +263,17 @@
         </div>
 
         <div class="form-group">
-          <label data-i18n="settings.apiKey">Gemini API 密钥</label>
-          <input type="password" id="setting-api-key" data-i18n-placeholder="settings.apiKeyPlaceholder" placeholder="输入你的 Gemini API 密钥">
-          <p class="hint" data-i18n="settings.apiKeyHint">从 Google AI Studio 免费获取密钥</p>
+          <label data-i18n="settings.apiProvider">API 提供商</label>
+          <select id="setting-api-provider">
+            <option value="google">Google (免费，5 RPM 限速)</option>
+            <option value="kie" selected>KIE.ai (付费，无限速)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label data-i18n="settings.apiKey">API 密钥</label>
+          <input type="password" id="setting-api-key" data-i18n-placeholder="settings.apiKeyPlaceholder" placeholder="输入你的 API 密钥">
+          <p class="hint" id="api-key-hint" data-i18n="settings.apiKeyHintKie">从 kie.ai/api-key 获取密钥</p>
         </div>
 
         <!-- Filter rules (collapsible) -->

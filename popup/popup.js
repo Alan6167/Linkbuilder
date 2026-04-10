@@ -1,6 +1,6 @@
 import { STORES, addRecords, getAllRecords, updateRecord, clearStore, getRecordCount, getSetting, setSetting } from '../lib/db.js';
 import { parseRow, filterBacklinks, getFilterStats, DEFAULT_FILTER_CONFIG } from '../lib/filter.js';
-import { generateComment, setRateLimitCallback, formatLink } from '../lib/gemini.js';
+import { generateComment, setRateLimitCallback, formatLink, setProvider, getProvider } from '../lib/gemini.js';
 import { t, setLanguage, getLanguage } from '../lib/i18n.js';
 
 // ========== State ==========
@@ -667,9 +667,9 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
   btnStart.hidden = false;
   btnStop.hidden = true;
   publishRunning = false;
-  const total = commentable.length * selectedSites.length;
+  const actualTotal = pubStats.confirmed + pubStats.moderation + pubStats.failed + pubStats.captcha;
   addLog(logEntries, t('publish.summaryDetail', {
-    total,
+    total: actualTotal,
     confirmed: pubStats.confirmed,
     moderation: pubStats.moderation,
     failed: pubStats.failed,
@@ -687,6 +687,17 @@ function addLog(container, message, type = 'info') {
 
 // ========== Settings Tab ==========
 async function loadSettings() {
+  // API provider
+  const provider = await getSetting('apiProvider');
+  if (provider) {
+    setProvider(provider);
+    document.getElementById('setting-api-provider').value = provider;
+  } else {
+    setProvider('kie');
+    document.getElementById('setting-api-provider').value = 'kie';
+  }
+  updateApiKeyHint();
+
   const apiKey = await getSetting('geminiApiKey');
   if (apiKey) document.getElementById('setting-api-key').value = apiKey;
 
@@ -739,7 +750,26 @@ async function loadSettings() {
   document.getElementById('db-sites').textContent = await getRecordCount(STORES.DISCOVERED_SITES);
 }
 
+// Provider change updates hint
+document.getElementById('setting-api-provider').addEventListener('change', (e) => {
+  updateApiKeyHint();
+});
+
+function updateApiKeyHint() {
+  const provider = document.getElementById('setting-api-provider').value;
+  const hint = document.getElementById('api-key-hint');
+  if (provider === 'kie') {
+    hint.textContent = t('settings.apiKeyHintKie');
+  } else {
+    hint.textContent = t('settings.apiKeyHintGoogle');
+  }
+}
+
 document.getElementById('btn-save-settings').addEventListener('click', async () => {
+  const provider = document.getElementById('setting-api-provider').value;
+  await setSetting('apiProvider', provider);
+  setProvider(provider);
+
   await setSetting('geminiApiKey', document.getElementById('setting-api-key').value.trim());
 
   // Number settings

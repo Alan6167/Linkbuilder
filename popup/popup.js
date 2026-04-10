@@ -1,6 +1,6 @@
 import { STORES, addRecords, getAllRecords, updateRecord, clearStore, getRecordCount, getSetting, setSetting } from '../lib/db.js';
 import { parseRow, filterBacklinks, getFilterStats, DEFAULT_FILTER_CONFIG } from '../lib/filter.js';
-import { generateComment } from '../lib/gemini.js';
+import { generateComment, setRateLimitCallback } from '../lib/gemini.js';
 import { t, setLanguage, getLanguage } from '../lib/i18n.js';
 
 // ========== State ==========
@@ -430,6 +430,11 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
   const logEntries = document.getElementById('log-entries');
   logArea.hidden = false;
   logEntries.innerHTML = '';
+
+  // Set up rate limit notification
+  setRateLimitCallback((seconds) => {
+    addLog(logEntries, t('publish.rateLimit', { seconds }), 'info');
+  });
 
   const btnStart = document.getElementById('btn-start-publish');
   const btnStop = document.getElementById('btn-stop-publish');

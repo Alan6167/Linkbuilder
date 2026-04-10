@@ -174,14 +174,32 @@
           <p class="hint" data-i18n="settings.apiKeyHint">从 Google AI Studio 获取密钥</p>
         </div>
 
-        <div class="form-group">
-          <label data-i18n="settings.minAscore">最低页面评分</label>
-          <input type="number" id="setting-min-ascore" value="1" min="0" max="100">
+        <hr>
+        <h3 data-i18n="settings.filterRules">筛选规则</h3>
+
+        <div class="form-row">
+          <div class="form-group form-half">
+            <label data-i18n="settings.minAscore">最低评分</label>
+            <input type="number" id="setting-min-ascore" value="1" min="0" max="100">
+          </div>
+          <div class="form-group form-half">
+            <label data-i18n="settings.maxAscore">最高评分</label>
+            <input type="number" id="setting-max-ascore" value="100" min="0" max="100">
+          </div>
         </div>
 
         <div class="form-group">
           <label data-i18n="settings.maxExternal">最大外链数量</label>
           <input type="number" id="setting-max-external" value="5000" min="100">
+        </div>
+
+        <div class="form-group">
+          <label data-i18n="settings.nofollowFilter">Nofollow 过滤</label>
+          <select id="setting-nofollow">
+            <option value="all" data-i18n="settings.nofollowAll">全部保留</option>
+            <option value="dofollow_only" data-i18n="settings.dofollowOnly">仅 Dofollow</option>
+            <option value="nofollow_only" data-i18n="settings.nofollowOnly">仅 Nofollow</option>
+          </select>
         </div>
 
         <div class="form-group">
@@ -196,6 +214,64 @@
             <input type="checkbox" id="setting-filter-spam" checked>
             <span data-i18n="settings.filterSpam">过滤 SPAM 域名</span>
           </label>
+        </div>
+
+        <div class="form-group">
+          <label>
+            <input type="checkbox" id="setting-filter-sitewide">
+            <span data-i18n="settings.filterSitewide">过滤 Sitewide 链接</span>
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label>
+            <input type="checkbox" id="setting-filter-sponsored">
+            <span data-i18n="settings.filterSponsored">过滤 Sponsored 链接</span>
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label>
+            <input type="checkbox" id="setting-dedup" checked>
+            <span data-i18n="settings.dedup">按域名去重</span>
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label>
+            <input type="checkbox" id="setting-prioritize-ugc" checked>
+            <span data-i18n="settings.prioritizeUgc">UGC 链接优先</span>
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label>
+            <input type="checkbox" id="setting-prioritize-blog" checked>
+            <span data-i18n="settings.prioritizeBlog">博客 URL 优先</span>
+          </label>
+        </div>
+
+        <hr>
+        <h3 data-i18n="settings.advancedFilter">高级筛选</h3>
+
+        <div class="form-group">
+          <label data-i18n="settings.customSpam">自定义 SPAM 关键词</label>
+          <textarea id="setting-spam-keywords" rows="2" data-i18n-placeholder="settings.customSpamHint" placeholder="每行一个关键词，如：spam-site&#10;bad-domain"></textarea>
+        </div>
+
+        <div class="form-group">
+          <label data-i18n="settings.domainBlacklist">域名黑名单</label>
+          <textarea id="setting-domain-blacklist" rows="2" data-i18n-placeholder="settings.domainBlacklistHint" placeholder="每行一个域名，如：spam.com&#10;bad-site.org"></textarea>
+        </div>
+
+        <div class="form-group">
+          <label data-i18n="settings.urlMustContain">URL 必须包含</label>
+          <input type="text" id="setting-url-must-contain" data-i18n-placeholder="settings.urlMustContainHint" placeholder="如：blog 或 comment">
+        </div>
+
+        <div class="form-group">
+          <label data-i18n="settings.urlMustNotContain">URL 不能包含</label>
+          <input type="text" id="setting-url-must-not-contain" data-i18n-placeholder="settings.urlMustNotContainHint" placeholder="如：forum 或 login">
         </div>
 
         <button id="btn-save-settings" class="btn btn-primary" data-i18n="settings.save">保存设置</button>

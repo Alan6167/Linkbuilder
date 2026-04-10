@@ -302,6 +302,31 @@ header .subtitle {
   margin-right: 6px;
 }
 
+.form-group textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+  transition: border-color 0.2s;
+}
+
+.form-group textarea:focus {
+  outline: none;
+  border-color: #667eea;
+}
+
+.form-row {
+  display: flex;
+  gap: 10px;
+}
+
+.form-half {
+  flex: 1;
+}
+
 /* Toolbar */
 .toolbar {
   display: flex;

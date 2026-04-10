@@ -537,7 +537,7 @@ async function loadSettings() {
   const apiKey = await getSetting('geminiApiKey');
   if (apiKey) document.getElementById('setting-api-key').value = apiKey;
 
-  // Load language setting
+  // Language
   const lang = await getSetting('language');
   if (lang) {
     setLanguage(lang);
@@ -546,16 +546,41 @@ async function loadSettings() {
     setLanguage('zh');
   }
 
-  // Load publish info from first site profile (backwards compat)
-  const profiles = await getSiteProfiles();
-  if (profiles.length > 0) {
-    const p = profiles[0];
-    document.getElementById('pub-name').value = p.name || '';
-    document.getElementById('pub-email').value = p.email || '';
-    document.getElementById('pub-website').value = p.website || '';
+  // Filter settings
+  const settingsMap = {
+    'setting-min-ascore': { key: 'minAscore', default: 1 },
+    'setting-max-ascore': { key: 'maxAscore', default: 100 },
+    'setting-max-external': { key: 'maxExternalLinks', default: 5000 },
+    'setting-nofollow': { key: 'nofollowFilter', default: 'all' },
+    'setting-url-must-contain': { key: 'urlMustContain', default: '' },
+    'setting-url-must-not-contain': { key: 'urlMustNotContain', default: '' },
+  };
+  for (const [id, { key, default: def }] of Object.entries(settingsMap)) {
+    const val = await getSetting(key);
+    document.getElementById(id).value = val ?? def;
   }
 
-  // Load DB stats
+  const checkboxMap = {
+    'setting-filter-lost': { key: 'filterLostLinks', default: true },
+    'setting-filter-spam': { key: 'filterSpamDomains', default: true },
+    'setting-filter-sitewide': { key: 'filterSitewide', default: false },
+    'setting-filter-sponsored': { key: 'filterSponsored', default: false },
+    'setting-dedup': { key: 'deduplicateByDomain', default: true },
+    'setting-prioritize-ugc': { key: 'prioritizeUgc', default: true },
+    'setting-prioritize-blog': { key: 'prioritizeBlogUrls', default: true },
+  };
+  for (const [id, { key, default: def }] of Object.entries(checkboxMap)) {
+    const val = await getSetting(key);
+    document.getElementById(id).checked = val ?? def;
+  }
+
+  // Textarea settings
+  const spamKw = await getSetting('customSpamKeywords');
+  document.getElementById('setting-spam-keywords').value = Array.isArray(spamKw) ? spamKw.join('\n') : '';
+  const blacklist = await getSetting('domainBlacklist');
+  document.getElementById('setting-domain-blacklist').value = Array.isArray(blacklist) ? blacklist.join('\n') : '';
+
+  // DB stats
   document.getElementById('db-backlinks').textContent = await getRecordCount(STORES.BACKLINKS);
   document.getElementById('db-comments').textContent = await getRecordCount(STORES.COMMENTS);
   document.getElementById('db-sites').textContent = await getRecordCount(STORES.DISCOVERED_SITES);
@@ -563,10 +588,32 @@ async function loadSettings() {
 
 document.getElementById('btn-save-settings').addEventListener('click', async () => {
   await setSetting('geminiApiKey', document.getElementById('setting-api-key').value.trim());
+
+  // Number settings
   await setSetting('minAscore', parseInt(document.getElementById('setting-min-ascore').value) || 1);
+  await setSetting('maxAscore', parseInt(document.getElementById('setting-max-ascore').value) || 100);
   await setSetting('maxExternalLinks', parseInt(document.getElementById('setting-max-external').value) || 5000);
+
+  // Select settings
+  await setSetting('nofollowFilter', document.getElementById('setting-nofollow').value);
+
+  // Checkbox settings
   await setSetting('filterLostLinks', document.getElementById('setting-filter-lost').checked);
   await setSetting('filterSpamDomains', document.getElementById('setting-filter-spam').checked);
+  await setSetting('filterSitewide', document.getElementById('setting-filter-sitewide').checked);
+  await setSetting('filterSponsored', document.getElementById('setting-filter-sponsored').checked);
+  await setSetting('deduplicateByDomain', document.getElementById('setting-dedup').checked);
+  await setSetting('prioritizeUgc', document.getElementById('setting-prioritize-ugc').checked);
+  await setSetting('prioritizeBlogUrls', document.getElementById('setting-prioritize-blog').checked);
+
+  // Textarea -> array
+  const parseLines = (val) => val.split('\n').map(s => s.trim()).filter(Boolean);
+  await setSetting('customSpamKeywords', parseLines(document.getElementById('setting-spam-keywords').value));
+  await setSetting('domainBlacklist', parseLines(document.getElementById('setting-domain-blacklist').value));
+
+  // Text settings
+  await setSetting('urlMustContain', document.getElementById('setting-url-must-contain').value.trim());
+  await setSetting('urlMustNotContain', document.getElementById('setting-url-must-not-contain').value.trim());
 
   const btn = document.getElementById('btn-save-settings');
   btn.textContent = t('settings.saved');
@@ -629,18 +676,21 @@ function downloadCSV(data, filename, columns) {
 }
 
 async function getFilterConfig() {
-  const minAscore = await getSetting('minAscore');
-  const maxExternalLinks = await getSetting('maxExternalLinks');
-  const filterLostLinks = await getSetting('filterLostLinks');
-  const filterSpamDomains = await getSetting('filterSpamDomains');
+  const keys = [
+    'minAscore', 'maxAscore', 'maxExternalLinks',
+    'filterLostLinks', 'filterSpamDomains', 'nofollowFilter',
+    'filterSitewide', 'filterSponsored',
+    'prioritizeUgc', 'prioritizeBlogUrls', 'deduplicateByDomain',
+    'customSpamKeywords', 'domainBlacklist',
+    'urlMustContain', 'urlMustNotContain'
+  ];
 
-  return {
-    ...DEFAULT_FILTER_CONFIG,
-    ...(minAscore != null && { minAscore }),
-    ...(maxExternalLinks != null && { maxExternalLinks }),
-    ...(filterLostLinks != null && { filterLostLinks }),
-    ...(filterSpamDomains != null && { filterSpamDomains })
-  };
+  const config = { ...DEFAULT_FILTER_CONFIG };
+  for (const key of keys) {
+    const val = await getSetting(key);
+    if (val != null) config[key] = val;
+  }
+  return config;
 }
 
 // Initialize

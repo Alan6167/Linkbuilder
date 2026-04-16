@@ -106,6 +106,18 @@
       <div class="section">
         <h2 data-i18n="publish.title">发布评论</h2>
 
+        <!-- Resume banner for interrupted task -->
+        <div id="resume-banner" class="resume-banner" hidden>
+          <div class="resume-text">
+            <strong data-i18n="publish.resumeTitle">发现未完成任务</strong>
+            <span id="resume-info"></span>
+          </div>
+          <div class="btn-group">
+            <button id="btn-resume-task" class="btn btn-small btn-primary" data-i18n="publish.resume">继续</button>
+            <button id="btn-discard-task" class="btn btn-small btn-danger" data-i18n="publish.discard">放弃</button>
+          </div>
+        </div>
+
         <!-- Site Profiles (collapsible) -->
         <details class="collapsible" id="site-form-details">
           <summary data-i18n="publish.siteProfile">网站配置</summary>

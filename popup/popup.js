@@ -33,7 +33,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
 
     if (tab.dataset.tab === 'backlinks') loadBacklinksList();
-    if (tab.dataset.tab === 'publish') loadSiteProfiles();
+    if (tab.dataset.tab === 'publish') { loadSiteProfiles(); checkResumeTask(); }
     if (tab.dataset.tab === 'settings') loadSettings();
   });
 });
@@ -498,9 +498,56 @@ function updateLinkPreview() {
   }
 }
 
-// Stop publish button
-document.getElementById('btn-stop-publish').addEventListener('click', () => {
+// Stop publish button - explicit stop clears the task state
+document.getElementById('btn-stop-publish').addEventListener('click', async () => {
   publishRunning = false;
+  setTimeout(async () => { await clearTaskState(); }, 1000);
+});
+
+// ========== Resume banner ==========
+async function checkResumeTask() {
+  const task = await getTaskState();
+  const banner = document.getElementById('resume-banner');
+
+  if (!task || !task.backlinkIds || publishRunning) {
+    banner.hidden = true;
+    return;
+  }
+
+  const total = task.backlinkIds.length;
+  const done = task.pageIndex;
+  const savedAgo = task.savedAt
+    ? Math.round((Date.now() - new Date(task.savedAt).getTime()) / 60000)
+    : 0;
+
+  document.getElementById('resume-info').textContent = t('publish.resumeInfo', {
+    done, total,
+    minutes: savedAgo
+  });
+  banner.hidden = false;
+}
+
+document.getElementById('btn-resume-task').addEventListener('click', async () => {
+  const task = await getTaskState();
+  if (!task) return;
+
+  document.getElementById('resume-banner').hidden = true;
+
+  await runPublishLoop({
+    backlinkIds: task.backlinkIds,
+    selectedSites: task.selectedSites,
+    mode: task.mode,
+    delay: task.delay,
+    startPageIndex: task.pageIndex,
+    startSiteIndex: task.siteIndex,
+    initialStats: task.stats || { confirmed: 0, moderation: 0, failed: 0, captcha: 0 }
+  });
+});
+
+document.getElementById('btn-discard-task').addEventListener('click', async () => {
+  if (!confirm(t('publish.discardConfirm'))) return;
+  await clearTaskState();
+  document.getElementById('resume-banner').hidden = true;
 });
 
 // Build comment config from UI
@@ -524,7 +571,6 @@ function getCommentConfig(detectedLinkFormat) {
 
 // Start publishing
 document.getElementById('btn-start-publish').addEventListener('click', async () => {
-  // Get selected site profiles
   const profiles = await getSiteProfiles();
   const checked = [...document.querySelectorAll('input[name="pub-sites"]:checked')];
   const selectedSites = checked.map(cb => profiles[parseInt(cb.value)]).filter(Boolean);
@@ -546,8 +592,6 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
 
   const backlinks = await getAllRecords(STORES.BACKLINKS);
   let commentable = backlinks.filter(b => b.status === 'commentable');
-
-  // Apply max pages limit
   if (maxPages > 0 && commentable.length > maxPages) {
     commentable = commentable.slice(0, maxPages);
   }
@@ -557,20 +601,66 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
     return;
   }
 
+  await runPublishLoop({
+    backlinkIds: commentable.map(b => b.id),
+    selectedSites,
+    mode,
+    delay,
+    startPageIndex: 0,
+    startSiteIndex: 0,
+    initialStats: { confirmed: 0, moderation: 0, failed: 0, captcha: 0 }
+  });
+});
+
+// ========== Publish task state (for resume) ==========
+async function saveTaskState(state) {
+  await setSetting('currentPublishTask', state);
+}
+
+async function getTaskState() {
+  return await getSetting('currentPublishTask');
+}
+
+async function clearTaskState() {
+  await setSetting('currentPublishTask', null);
+}
+
+// Core publish loop — used for both fresh start and resume
+async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPageIndex, startSiteIndex, initialStats }) {
+  const apiKey = await getSetting('geminiApiKey');
+
+  // Load fresh backlinks from DB (status may have changed)
+  const allBacklinks = await getAllRecords(STORES.BACKLINKS);
+  const backlinkMap = new Map(allBacklinks.map(b => [b.id, b]));
+  const commentable = backlinkIds.map(id => backlinkMap.get(id)).filter(Boolean);
+
+  if (commentable.length === 0) {
+    alert(t('publish.noCommentable'));
+    await clearTaskState();
+    return;
+  }
+
   const logArea = document.getElementById('publish-log');
   const logEntries = document.getElementById('log-entries');
   logArea.hidden = false;
-  logEntries.innerHTML = '';
 
   setRateLimitCallback((seconds) => {
     addLog(logEntries, t('publish.rateLimit', { seconds }), 'info');
   });
 
-  addLog(logEntries, t('publish.startInfo', {
-    sites: selectedSites.length,
-    pages: commentable.length,
-    delay
-  }), 'info');
+  if (startPageIndex === 0 && startSiteIndex === 0) {
+    logEntries.innerHTML = '';
+    addLog(logEntries, t('publish.startInfo', {
+      sites: selectedSites.length,
+      pages: commentable.length,
+      delay
+    }), 'info');
+  } else {
+    addLog(logEntries, t('publish.resumed', {
+      page: startPageIndex + 1,
+      total: commentable.length
+    }), 'info');
+  }
 
   const btnStart = document.getElementById('btn-start-publish');
   const btnStop = document.getElementById('btn-stop-publish');
@@ -578,19 +668,50 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
   btnStop.hidden = false;
   publishRunning = true;
 
-  let pubStats = { confirmed: 0, moderation: 0, failed: 0, captcha: 0 };
+  let pubStats = { ...initialStats };
 
-  for (let i = 0; i < commentable.length; i++) {
+  for (let i = startPageIndex; i < commentable.length; i++) {
     if (!publishRunning) {
       addLog(logEntries, t('backlinks.stopped'), 'error');
-      break;
+      // Save state for potential resume
+      await saveTaskState({
+        backlinkIds,
+        selectedSites,
+        mode,
+        delay,
+        pageIndex: i,
+        siteIndex: 0,
+        stats: pubStats,
+        savedAt: new Date().toISOString()
+      });
+      btnStart.hidden = false;
+      btnStop.hidden = true;
+      return;
     }
 
     const bl = commentable[i];
+    const siteStart = i === startPageIndex ? startSiteIndex : 0;
 
-    // Each blog page gets comments from all selected sites (rotate)
-    for (let s = 0; s < selectedSites.length; s++) {
-      if (!publishRunning) break;
+    for (let s = siteStart; s < selectedSites.length; s++) {
+      if (!publishRunning) {
+        await saveTaskState({
+          backlinkIds, selectedSites, mode, delay,
+          pageIndex: i, siteIndex: s,
+          stats: pubStats,
+          savedAt: new Date().toISOString()
+        });
+        btnStart.hidden = false;
+        btnStop.hidden = true;
+        return;
+      }
+
+      // Save progress before processing each site
+      await saveTaskState({
+        backlinkIds, selectedSites, mode, delay,
+        pageIndex: i, siteIndex: s,
+        stats: pubStats,
+        savedAt: new Date().toISOString()
+      });
 
       const site = selectedSites[s];
       const { name, email, website } = site;
@@ -621,16 +742,15 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
           addLog(logEntries, t('publish.alreadyCommented', { site: site.profileName }), 'info');
           if (!bl._siteResults) bl._siteResults = [];
           bl._siteResults.push('already_exists');
-          pubStats.moderation++; // count as done, skip
+          pubStats.moderation++;
           if (mode === 'auto') {
             await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
             tabId = null;
           }
-          continue; // skip to next site
+          continue;
         }
 
         const commentConfig = getCommentConfig(pageInfo.linkFormat);
-        // Override link URL with current site's website
         commentConfig.linkUrl = commentConfig.linkUrl || website;
 
         addLog(logEntries, t('publish.generating'), 'info');
@@ -663,17 +783,14 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
 
           if (submitResult.success) {
             addLog(logEntries, t('publish.submitted'), 'success');
-
-            // Verify: wait for page update and check result
             addLog(logEntries, t('publish.verifying'), 'info');
             const verification = await chrome.runtime.sendMessage({
-              type: 'verifyComment',
-              tabId,
+              type: 'verifyComment', tabId,
               commentText: commentText.substring(0, 50),
               website
             });
 
-            commentStatus = verification.status; // confirmed | pending_moderation | rejected | captcha | unknown
+            commentStatus = verification.status;
             const statusKey = `publish.verify_${commentStatus}`;
             const logType = commentStatus === 'confirmed' ? 'success'
               : (commentStatus === 'rejected' || commentStatus === 'captcha') ? 'error' : 'info';
@@ -682,7 +799,7 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
             if (commentStatus === 'confirmed') pubStats.confirmed++;
             else if (commentStatus === 'captcha') pubStats.captcha++;
             else if (commentStatus === 'rejected') pubStats.failed++;
-            else pubStats.moderation++; // pending_moderation or unknown
+            else pubStats.moderation++;
           } else {
             addLog(logEntries, t('publish.submitFailed', { error: submitResult.error || 'unknown' }), 'error');
             commentStatus = 'submit_failed';
@@ -697,7 +814,6 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
           pubStats.moderation++;
         }
 
-        // Save comment record with verification status
         await addRecords(STORES.COMMENTS, [{
           backlinkId: bl.id,
           sourceUrl: bl.sourceUrl,
@@ -709,9 +825,8 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
           publishedAt: new Date().toISOString()
         }]);
 
-      // Track this site's result for the backlink
-      if (!bl._siteResults) bl._siteResults = [];
-      bl._siteResults.push(commentStatus);
+        if (!bl._siteResults) bl._siteResults = [];
+        bl._siteResults.push(commentStatus);
 
       } catch (err) {
         addLog(logEntries, t('common.error', { message: err.message }), 'error');
@@ -723,41 +838,37 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
         }
       }
 
-      // Delay between sites on the same page
       if (s < selectedSites.length - 1 && publishRunning) {
         addLog(logEntries, t('publish.waiting', { seconds: delay }), 'info');
         await new Promise(resolve => setTimeout(resolve, delay * 1000));
       }
     }
 
-    // Update backlink status based on actual results
+    // Update backlink status based on results
     const results = bl._siteResults || [];
     const hasConfirmed = results.includes('confirmed');
     const allFailed = results.every(r => r === 'submit_failed' || r === 'rejected' || r === 'error');
     const hasCaptcha = results.includes('captcha');
 
-    if (hasConfirmed) {
-      bl.status = 'commented'; // at least one confirmed
-    } else if (hasCaptcha) {
-      bl.status = 'captcha_blocked';
-    } else if (allFailed && results.length > 0) {
-      bl.status = 'publish_failed';
-    } else {
-      bl.status = 'pending_moderation'; // submitted but not confirmed
-    }
+    if (hasConfirmed) bl.status = 'commented';
+    else if (hasCaptcha) bl.status = 'captcha_blocked';
+    else if (allFailed && results.length > 0) bl.status = 'publish_failed';
+    else bl.status = 'pending_moderation';
+
     bl.commentedAt = new Date().toISOString();
     bl.commentedWith = selectedSites.map(s => s.profileName);
     bl.verifyResults = results;
     delete bl._siteResults;
     await updateRecord(STORES.BACKLINKS, bl);
 
-    // Delay between different blog pages
     if (i < commentable.length - 1 && publishRunning) {
       addLog(logEntries, t('publish.waiting', { seconds: delay }), 'info');
       await new Promise(resolve => setTimeout(resolve, delay * 1000));
     }
   }
 
+  // Task completed normally — clear state
+  await clearTaskState();
   btnStart.hidden = false;
   btnStop.hidden = true;
   publishRunning = false;
@@ -769,7 +880,7 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
     failed: pubStats.failed,
     captcha: pubStats.captcha
   }), pubStats.failed > 0 ? 'error' : 'success');
-});
+}
 
 function addLog(container, message, type = 'info') {
   const entry = document.createElement('div');
@@ -1040,4 +1151,5 @@ async function getFilterConfig() {
 document.addEventListener('DOMContentLoaded', () => {
   loadSettings();
   loadSiteProfiles();
+  checkResumeTask();
 });

@@ -909,6 +909,72 @@ document.getElementById('btn-export-discovered').addEventListener('click', async
     ['domain', 'url', 'anchorText', 'discoveredFrom', 'discoveredAt']);
 });
 
+// Export site profiles as JSON
+document.getElementById('btn-export-sites').addEventListener('click', async () => {
+  const profiles = await getSiteProfiles();
+  if (profiles.length === 0) {
+    alert(t('common.noData'));
+    return;
+  }
+  const json = JSON.stringify(profiles, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `linkbuilder-sites-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+// Import site profiles from JSON
+document.getElementById('btn-import-sites').addEventListener('click', () => {
+  document.getElementById('import-sites-input').click();
+});
+
+document.getElementById('import-sites-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  try {
+    const text = await file.text();
+    const imported = JSON.parse(text);
+
+    if (!Array.isArray(imported)) {
+      alert(t('settings.importInvalid'));
+      return;
+    }
+
+    // Validate structure
+    const valid = imported.filter(p => p && p.name && p.email && p.website);
+    if (valid.length === 0) {
+      alert(t('settings.importInvalid'));
+      return;
+    }
+
+    const existing = await getSiteProfiles();
+    const existingWebsites = new Set(existing.map(p => p.website));
+
+    // Merge: skip duplicates by website URL
+    let added = 0, skipped = 0;
+    for (const p of valid) {
+      if (existingWebsites.has(p.website)) {
+        skipped++;
+      } else {
+        existing.push(p);
+        added++;
+      }
+    }
+
+    await saveSiteProfiles(existing);
+    await loadSiteProfiles();
+    alert(t('settings.importSuccess', { added, skipped }));
+  } catch (err) {
+    alert(t('settings.importError', { message: err.message }));
+  } finally {
+    e.target.value = ''; // reset for re-upload
+  }
+});
+
 document.getElementById('btn-clear-data').addEventListener('click', async () => {
   if (!confirm(t('settings.clearConfirm'))) return;
 

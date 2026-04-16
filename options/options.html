@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Linkbuilder Settings</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      max-width: 600px;
+      margin: 40px auto;
+      padding: 20px;
+      color: #333;
+    }
+    h1 { font-size: 24px; margin-bottom: 20px; }
+    .form-group {
+      margin-bottom: 16px;
+    }
+    .form-group label {
+      display: block;
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+    .form-group input, .form-group select {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    .hint { color: #888; font-size: 12px; margin-top: 4px; }
+    button {
+      padding: 10px 20px;
+      background: #667eea;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    button:hover { opacity: 0.9; }
+  </style>
+</head>
+<body>
+  <h1>Linkbuilder Settings</h1>
+
+  <div class="form-group">
+    <label>Gemini API Key</label>
+    <input type="password" id="api-key" placeholder="Enter your Gemini API key">
+    <p class="hint">Get your key from <a href="https://aistudio.google.com/apikey" target="_blank">Google AI Studio</a></p>
+  </div>
+
+  <div class="form-group">
+    <label>Default Name</label>
+    <input type="text" id="default-name" placeholder="Your name for blog comments">
+  </div>
+
+  <div class="form-group">
+    <label>Default Email</label>
+    <input type="email" id="default-email" placeholder="your@email.com">
+  </div>
+
+  <div class="form-group">
+    <label>Default Website</label>
+    <input type="url" id="default-website" placeholder="https://yoursite.com">
+  </div>
+
+  <button id="save">Save Settings</button>
+
+  <script type="module">
+    import { getSetting, setSetting } from '../lib/db.js';
+
+    async function load() {
+      const fields = {
+        'api-key': 'geminiApiKey',
+        'default-name': 'publishName',
+        'default-email': 'publishEmail',
+        'default-website': 'publishWebsite'
+      };
+      for (const [elementId, key] of Object.entries(fields)) {
+        const val = await getSetting(key);
+        if (val) document.getElementById(elementId).value = val;
+      }
+    }
+
+    document.getElementById('save').addEventListener('click', async () => {
+      await setSetting('geminiApiKey', document.getElementById('api-key').value.trim());
+      await setSetting('publishName', document.getElementById('default-name').value.trim());
+      await setSetting('publishEmail', document.getElementById('default-email').value.trim());
+      await setSetting('publishWebsite', document.getElementById('default-website').value.trim());
+
+      const btn = document.getElementById('save');
+      btn.textContent = 'Saved!';
+      setTimeout(() => btn.textContent = 'Save Settings', 1500);
+    });
+
+    load();
+  </script>
+</body>
+</html>

@@ -106,6 +106,18 @@
       <div class="section">
         <h2 data-i18n="publish.title">发布评论</h2>
 
+        <!-- Resume banner for interrupted task -->
+        <div id="resume-banner" class="resume-banner" hidden>
+          <div class="resume-text">
+            <strong data-i18n="publish.resumeTitle">发现未完成任务</strong>
+            <span id="resume-info"></span>
+          </div>
+          <div class="btn-group">
+            <button id="btn-resume-task" class="btn btn-small btn-primary" data-i18n="publish.resume">继续</button>
+            <button id="btn-discard-task" class="btn btn-small btn-danger" data-i18n="publish.discard">放弃</button>
+          </div>
+        </div>
+
         <!-- Site Profiles (collapsible) -->
         <details class="collapsible" id="site-form-details">
           <summary data-i18n="publish.siteProfile">网站配置</summary>
@@ -119,7 +131,7 @@
             <div id="site-form">
               <div class="form-group">
                 <label data-i18n="publish.siteName">配置名称</label>
-                <input type="text" id="pub-profile-name" data-i18n-placeholder="publish.siteNamePlaceholder" placeholder="如：我的游戏站">
+                <input type="text" id="pub-profile-name" data-i18n-placeholder="publish.siteNamePlaceholder" placeholder="如：我的主站">
               </div>
               <div class="form-group">
                 <label data-i18n="publish.name">你的昵称</label>
@@ -348,7 +360,10 @@
             <div class="btn-group">
               <button id="btn-export-backlinks" class="btn btn-small" data-i18n="settings.exportBacklinks">导出外链</button>
               <button id="btn-export-discovered" class="btn btn-small" data-i18n="settings.exportDiscovered">导出发现的网站</button>
+              <button id="btn-export-sites" class="btn btn-small" data-i18n="settings.exportSites">导出网站配置</button>
+              <button id="btn-import-sites" class="btn btn-small" data-i18n="settings.importSites">导入网站配置</button>
               <button id="btn-clear-data" class="btn btn-small btn-danger" data-i18n="settings.clearData">清除所有数据</button>
+              <input type="file" id="import-sites-input" accept=".json" hidden>
             </div>
             <div id="db-stats" class="stats-grid" style="margin-top: 12px;">
               <div class="stat">

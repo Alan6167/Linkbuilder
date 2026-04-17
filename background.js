@@ -129,9 +129,14 @@ const messageHandlers = {
 
   // Verify if comment was published after submission
   async verifyComment({ tabId, commentText, website }) {
-    // Wait for page to potentially reload/redirect after submit
-    await waitForTabLoad(tabId, 10000);
-    // Small extra wait for dynamic content
+    // Wait a moment for the form submission to trigger navigation
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Now wait for the page to finish loading (reload/redirect after submit)
+    // Use a fresh check: listen for loading→complete transition
+    await waitForNavigation(tabId, 12000);
+
+    // Extra wait for dynamic content rendering
     await new Promise(resolve => setTimeout(resolve, 2000));
 
     const results = await chrome.scripting.executeScript({
@@ -142,6 +147,33 @@ const messageHandlers = {
     return results[0]?.result || { verified: false, reason: 'script_failed' };
   }
 };
+
+// Wait for a tab to navigate (loading→complete), with timeout
+// Unlike waitForTabLoad, this doesn't short-circuit if the tab is already complete,
+// because we expect a form submission to trigger a new page load.
+function waitForNavigation(tabId, timeoutMs = 12000) {
+  return new Promise((resolve) => {
+    let sawLoading = false;
+    const timeout = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve(); // Resolve even on timeout — page may use AJAX submission
+    }, timeoutMs);
+
+    function listener(updatedTabId, changeInfo) {
+      if (updatedTabId !== tabId) return;
+      if (changeInfo.status === 'loading') {
+        sawLoading = true;
+      }
+      if (changeInfo.status === 'complete' && sawLoading) {
+        clearTimeout(timeout);
+        chrome.tabs.onUpdated.removeListener(listener);
+        setTimeout(resolve, 500);
+      }
+    }
+
+    chrome.tabs.onUpdated.addListener(listener);
+  });
+}
 
 // Wait for a tab to finish loading, with timeout
 function waitForTabLoad(tabId, timeoutMs = 15000) {

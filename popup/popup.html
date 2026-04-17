@@ -27,43 +27,59 @@
     <!-- Import Tab -->
     <div id="tab-import" class="tab-content active">
       <div class="section">
-        <h2 data-i18n="import.title">导入 Semrush 外链数据</h2>
-        <p class="hint" data-i18n="import.hint">上传从 Semrush 外链分析导出的 .xlsx 文件</p>
-
-        <div class="upload-area" id="upload-area">
-          <div class="upload-icon">+</div>
-          <p data-i18n="import.upload">点击或拖拽 .xlsx 文件到此处</p>
-          <input type="file" id="file-input" accept=".xlsx,.xls,.csv" hidden>
+        <!-- Import sub-tabs -->
+        <div class="sub-tabs">
+          <button class="sub-tab active" data-subtab="excel" data-i18n="import.excelTab">Excel 导入</button>
+          <button class="sub-tab" data-subtab="urls" data-i18n="import.urlsTab">粘贴 URL</button>
         </div>
 
-        <div id="import-progress" class="progress-section" hidden>
-          <div class="progress-bar">
-            <div class="progress-fill" id="progress-fill"></div>
+        <!-- Excel import -->
+        <div id="subtab-excel" class="sub-tab-content active">
+          <p class="hint" data-i18n="import.hint">上传从 Semrush 外链分析导出的 .xlsx 文件</p>
+
+          <div class="upload-area" id="upload-area">
+            <div class="upload-icon">+</div>
+            <p data-i18n="import.upload">点击或拖拽 .xlsx 文件到此处</p>
+            <input type="file" id="file-input" accept=".xlsx,.xls,.csv" hidden>
           </div>
-          <p id="progress-text" data-i18n="import.processing">处理中...</p>
+
+          <div id="import-progress" class="progress-section" hidden>
+            <div class="progress-bar">
+              <div class="progress-fill" id="progress-fill"></div>
+            </div>
+            <p id="progress-text" data-i18n="import.processing">处理中...</p>
+          </div>
+
+          <div id="import-stats" class="stats-section" hidden>
+            <h3 data-i18n="import.results">导入结果</h3>
+            <div class="stats-grid">
+              <div class="stat">
+                <span class="stat-value" id="stat-total">0</span>
+                <span class="stat-label" data-i18n="import.totalRows">总行数</span>
+              </div>
+              <div class="stat">
+                <span class="stat-value" id="stat-filtered">0</span>
+                <span class="stat-label" data-i18n="import.afterFilter">筛选后</span>
+              </div>
+              <div class="stat">
+                <span class="stat-value" id="stat-ugc">0</span>
+                <span class="stat-label" data-i18n="import.ugcLinks">UGC 链接</span>
+              </div>
+              <div class="stat">
+                <span class="stat-value" id="stat-blog">0</span>
+                <span class="stat-label" data-i18n="import.blogUrls">博客 URL</span>
+              </div>
+            </div>
+            <button id="btn-save-import" class="btn btn-primary" data-i18n="import.save">保存到数据库</button>
+          </div>
         </div>
 
-        <div id="import-stats" class="stats-section" hidden>
-          <h3 data-i18n="import.results">导入结果</h3>
-          <div class="stats-grid">
-            <div class="stat">
-              <span class="stat-value" id="stat-total">0</span>
-              <span class="stat-label" data-i18n="import.totalRows">总行数</span>
-            </div>
-            <div class="stat">
-              <span class="stat-value" id="stat-filtered">0</span>
-              <span class="stat-label" data-i18n="import.afterFilter">筛选后</span>
-            </div>
-            <div class="stat">
-              <span class="stat-value" id="stat-ugc">0</span>
-              <span class="stat-label" data-i18n="import.ugcLinks">UGC 链接</span>
-            </div>
-            <div class="stat">
-              <span class="stat-value" id="stat-blog">0</span>
-              <span class="stat-label" data-i18n="import.blogUrls">博客 URL</span>
-            </div>
-          </div>
-          <button id="btn-save-import" class="btn btn-primary" data-i18n="import.save">保存到数据库</button>
+        <!-- URL paste import -->
+        <div id="subtab-urls" class="sub-tab-content">
+          <p class="hint" data-i18n="import.urlsHint">每行一个 URL，支持从其他工具或浏览器批量复制粘贴</p>
+          <textarea id="url-paste-input" rows="8" data-i18n-placeholder="import.urlsPlaceholder" placeholder="https://blog.example.com/post-1&#10;https://another-site.com/article&#10;https://wordpress.blog/2024/03/hello"></textarea>
+          <button id="btn-add-urls" class="btn btn-primary btn-full" data-i18n="import.addUrls">添加到队列</button>
+          <div id="url-import-result" class="hint" hidden></div>
         </div>
       </div>
     </div>
@@ -71,22 +87,46 @@
     <!-- Backlinks Tab -->
     <div id="tab-backlinks" class="tab-content">
       <div class="section">
-        <div class="toolbar">
-          <h2 data-i18n="backlinks.title">外链资源</h2>
-          <div class="toolbar-actions">
-            <select id="filter-status">
-              <option value="all" data-i18n="backlinks.all">全部状态</option>
-              <option value="pending" data-i18n="backlinks.pending">待处理</option>
-              <option value="commentable" data-i18n="backlinks.commentable">可评论</option>
-              <option value="not_commentable" data-i18n="backlinks.notCommentable">不可评论</option>
-              <option value="commented" data-i18n="backlinks.commented">已评论</option>
-              <option value="pending_moderation" data-i18n="backlinks.pendingModeration">待审核</option>
-              <option value="publish_failed" data-i18n="backlinks.publishFailed">发布失败</option>
-              <option value="captcha_blocked" data-i18n="backlinks.captchaBlocked">人机验证</option>
-            </select>
-            <button id="btn-analyze-all" class="btn btn-small" data-i18n="backlinks.analyzeAll">全部分析</button>
-            <button id="btn-stop-analyze" class="btn btn-small btn-danger" hidden data-i18n="backlinks.stop">停止</button>
-          </div>
+        <!-- Status overview bar -->
+        <div class="status-bar" id="status-bar">
+          <button class="status-chip active" data-filter="all">
+            <span data-i18n="backlinks.all">全部</span> <span class="chip-count" id="count-all">0</span>
+          </button>
+          <button class="status-chip" data-filter="pending">
+            <span data-i18n="backlinks.grpPending">待处理</span> <span class="chip-count" id="count-pending">0</span>
+          </button>
+          <button class="status-chip" data-filter="commentable">
+            <span data-i18n="backlinks.grpCommentable">可评论</span> <span class="chip-count" id="count-commentable">0</span>
+          </button>
+          <button class="status-chip" data-filter="published">
+            <span data-i18n="backlinks.grpPublished">已发布</span> <span class="chip-count" id="count-published">0</span>
+          </button>
+          <button class="status-chip" data-filter="failed">
+            <span data-i18n="backlinks.grpFailed">失败</span> <span class="chip-count" id="count-failed">0</span>
+          </button>
+        </div>
+
+        <!-- Search + Sort + Analyze -->
+        <div class="search-row">
+          <input type="text" id="bl-search" data-i18n-placeholder="backlinks.searchPlaceholder" placeholder="搜索域名或标题...">
+          <select id="bl-sort">
+            <option value="ascore_desc" data-i18n="backlinks.sortScore">评分↓</option>
+            <option value="ascore_asc" data-i18n="backlinks.sortScoreAsc">评分↑</option>
+            <option value="date_desc" data-i18n="backlinks.sortDateDesc">最新</option>
+            <option value="domain" data-i18n="backlinks.sortDomain">域名</option>
+          </select>
+          <button id="btn-analyze-all" class="btn btn-small" data-i18n="backlinks.analyzeAll">分析</button>
+          <button id="btn-stop-analyze" class="btn btn-small btn-danger" hidden data-i18n="backlinks.stop">停止</button>
+        </div>
+
+        <!-- Batch action bar (hidden until items selected) -->
+        <div id="batch-bar" class="batch-bar" hidden>
+          <label class="batch-select-all">
+            <input type="checkbox" id="bl-select-all"> <span data-i18n="backlinks.selectAll">全选</span>
+          </label>
+          <span id="batch-count"></span>
+          <button id="btn-batch-delete" class="btn btn-small btn-danger" data-i18n="backlinks.batchDelete">删除</button>
+          <button id="btn-batch-retry" class="btn btn-small" data-i18n="backlinks.batchRetry">重试</button>
         </div>
 
         <div id="backlinks-list" class="list">

@@ -1,4 +1,4 @@
-import { STORES, addRecords, getAllRecords, updateRecord, clearStore, getRecordCount, getSetting, setSetting } from '../lib/db.js';
+import { STORES, addRecords, getAllRecords, updateRecord, deleteRecord, clearStore, getRecordCount, getSetting, setSetting } from '../lib/db.js';
 import { parseRow, filterBacklinks, getFilterStats, DEFAULT_FILTER_CONFIG } from '../lib/filter.js';
 import { generateComment, setRateLimitCallback, formatLink, setProvider, getProvider } from '../lib/gemini.js';
 import { t, setLanguage, getLanguage } from '../lib/i18n.js';
@@ -39,6 +39,18 @@ document.querySelectorAll('.tab').forEach(tab => {
 });
 
 // ========== Import Tab ==========
+
+// Sub-tab switching
+document.querySelectorAll('.sub-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.sub-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.sub-tab-content').forEach(c => c.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(`subtab-${tab.dataset.subtab}`).classList.add('active');
+  });
+});
+
+// -- Excel import --
 const uploadArea = document.getElementById('upload-area');
 const fileInput = document.getElementById('file-input');
 
@@ -134,47 +146,197 @@ document.getElementById('btn-save-import').addEventListener('click', async () =>
   }
 });
 
-// ========== Backlinks Tab ==========
-async function loadBacklinksList() {
-  const list = document.getElementById('backlinks-list');
-  const filterStatus = document.getElementById('filter-status').value;
+// -- URL paste import --
+document.getElementById('btn-add-urls').addEventListener('click', async () => {
+  const input = document.getElementById('url-paste-input');
+  const resultDiv = document.getElementById('url-import-result');
+  const text = input.value.trim();
 
-  let backlinks = await getAllRecords(STORES.BACKLINKS);
+  if (!text) return;
 
-  if (filterStatus !== 'all') {
-    backlinks = backlinks.filter(b => b.status === filterStatus);
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const validUrls = [];
+
+  for (const line of lines) {
+    try {
+      const url = new URL(line);
+      if (url.protocol === 'http:' || url.protocol === 'https:') {
+        validUrls.push(url.href);
+      }
+    } catch { /* skip invalid URLs */ }
   }
+
+  if (validUrls.length === 0) {
+    resultDiv.textContent = t('import.noValidUrls');
+    resultDiv.hidden = false;
+    return;
+  }
+
+  // Check for duplicates against existing backlinks
+  const existing = await getAllRecords(STORES.BACKLINKS);
+  const existingUrls = new Set(existing.map(b => b.sourceUrl));
+
+  const newRecords = [];
+  let skipped = 0;
+  for (const url of validUrls) {
+    if (existingUrls.has(url)) {
+      skipped++;
+      continue;
+    }
+    existingUrls.add(url);
+    const domain = new URL(url).hostname;
+    newRecords.push({
+      ascore: 0,
+      sourceTitle: domain, // will be updated when page is analyzed
+      sourceUrl: url,
+      targetUrl: '',
+      anchor: '',
+      externalLinks: 0,
+      internalLinks: 0,
+      nofollow: false,
+      sponsored: false,
+      ugc: false,
+      isText: true,
+      isFrame: false,
+      isForm: false,
+      isImage: false,
+      sitewide: false,
+      firstSeen: '',
+      lastSeen: '',
+      newLink: false,
+      lostLink: false,
+      sourceDomain: domain,
+      isBlogUrl: /blog|post|article|\/\d{4}\/\d{2}\/|wordpress|comment/i.test(url),
+      isSpam: false,
+      status: 'pending',
+      importedAt: new Date().toISOString()
+    });
+  }
+
+  if (newRecords.length > 0) {
+    await addRecords(STORES.BACKLINKS, newRecords);
+  }
+
+  resultDiv.textContent = t('import.urlsResult', { added: newRecords.length, skipped });
+  resultDiv.hidden = false;
+  input.value = '';
+});
+
+// ========== Backlinks Tab ==========
+let currentFilter = 'all';
+
+// Status group mapping: merge similar statuses into 4 groups
+const STATUS_GROUPS = {
+  pending: ['pending', 'analyzing'],
+  commentable: ['commentable'],
+  published: ['commented', 'pending_moderation', 'pending_review'],
+  failed: ['publish_failed', 'captcha_blocked', 'error', 'not_commentable']
+};
+
+function getStatusGroup(status) {
+  for (const [group, statuses] of Object.entries(STATUS_GROUPS)) {
+    if (statuses.includes(status)) return group;
+  }
+  return 'failed';
+}
+
+async function loadBacklinksList() {
+  let allBacklinks = await getAllRecords(STORES.BACKLINKS);
+  const list = document.getElementById('backlinks-list');
+
+  // Update status bar counts
+  const counts = { all: allBacklinks.length, pending: 0, commentable: 0, published: 0, failed: 0 };
+  for (const bl of allBacklinks) {
+    counts[getStatusGroup(bl.status)]++;
+  }
+  document.getElementById('count-all').textContent = counts.all;
+  document.getElementById('count-pending').textContent = counts.pending;
+  document.getElementById('count-commentable').textContent = counts.commentable;
+  document.getElementById('count-published').textContent = counts.published;
+  document.getElementById('count-failed').textContent = counts.failed;
+
+  // Apply status filter
+  let backlinks = allBacklinks;
+  if (currentFilter !== 'all') {
+    const statuses = STATUS_GROUPS[currentFilter] || [];
+    backlinks = backlinks.filter(b => statuses.includes(b.status));
+  }
+
+  // Apply search
+  const search = document.getElementById('bl-search').value.trim().toLowerCase();
+  if (search) {
+    backlinks = backlinks.filter(b =>
+      (b.sourceDomain || '').toLowerCase().includes(search) ||
+      (b.sourceTitle || '').toLowerCase().includes(search)
+    );
+  }
+
+  // Apply sort
+  const sort = document.getElementById('bl-sort').value;
+  backlinks.sort((a, b) => {
+    if (sort === 'ascore_desc') return b.ascore - a.ascore;
+    if (sort === 'ascore_asc') return a.ascore - b.ascore;
+    if (sort === 'date_desc') return (b.importedAt || '').localeCompare(a.importedAt || '');
+    if (sort === 'domain') return (a.sourceDomain || '').localeCompare(b.sourceDomain || '');
+    return 0;
+  });
 
   if (backlinks.length === 0) {
     list.innerHTML = `<p class="empty-state">${t('backlinks.empty')}</p>`;
     document.getElementById('pagination').hidden = true;
+    updateBatchBar();
     return;
   }
 
+  // Pagination
   const totalPages = Math.ceil(backlinks.length / PAGE_SIZE);
+  if (currentPage > totalPages) currentPage = totalPages;
   const start = (currentPage - 1) * PAGE_SIZE;
   const pageItems = backlinks.slice(start, start + PAGE_SIZE);
 
-  list.innerHTML = pageItems.map(bl => `
-    <div class="list-item" data-id="${bl.id}">
-      <div class="list-item-header">
-        <span class="list-item-title" title="${escapeHtml(bl.sourceTitle)}">${escapeHtml(bl.sourceTitle)}</span>
-        <span class="badge badge-${bl.status}">${bl.status}</span>
-      </div>
-      <div class="list-item-url" title="${escapeHtml(bl.sourceUrl)}">${escapeHtml(bl.sourceUrl)}</div>
-      <div class="list-item-meta">
-        <span>Score: ${bl.ascore}</span>
-        <span>Ext: ${bl.externalLinks}</span>
-        ${bl.ugc ? '<span class="badge badge-ugc">UGC</span>' : ''}
-        ${bl.isBlogUrl ? '<span class="badge badge-commentable">Blog</span>' : ''}
-        ${bl.nofollow ? '<span>nofollow</span>' : '<span>dofollow</span>'}
-        ${['commented', 'pending_moderation'].includes(bl.status) ? `<button class="btn-reverify btn btn-small" data-id="${bl.id}" data-url="${escapeHtml(bl.sourceUrl)}">${t('backlinks.reverify')}</button>` : ''}
-        ${bl.status === 'publish_failed' ? `<button class="btn-retry btn btn-small" data-id="${bl.id}">${t('backlinks.retry')}</button>` : ''}
-      </div>
-    </div>
-  `).join('');
+  list.innerHTML = pageItems.map(bl => {
+    const group = getStatusGroup(bl.status);
+    const dimClass = bl.status === 'not_commentable' ? ' list-item-dim' : '';
 
-  // Re-verify button handler
+    let extraInfo = '';
+    if (bl.errorMessage && ['publish_failed', 'error', 'captcha_blocked'].includes(bl.status)) {
+      extraInfo = `<div class="list-item-error">${escapeHtml(bl.errorMessage).substring(0, 120)}</div>`;
+    }
+    if (bl.commentedAt && ['commented', 'pending_moderation'].includes(bl.status)) {
+      const sites = bl.commentedWith?.join(', ') || '';
+      extraInfo = `<div class="list-item-published">${bl.commentedAt.substring(0, 10)}${sites ? ' · ' + escapeHtml(sites) : ''}</div>`;
+    }
+
+    const actions = [];
+    if (['commented', 'pending_moderation'].includes(bl.status)) {
+      actions.push(`<button class="btn-reverify btn btn-small" data-id="${bl.id}" data-url="${escapeHtml(bl.sourceUrl)}">${t('backlinks.reverify')}</button>`);
+    }
+    if (['publish_failed', 'error', 'captcha_blocked'].includes(bl.status)) {
+      actions.push(`<button class="btn-retry btn btn-small" data-id="${bl.id}">${t('backlinks.retry')}</button>`);
+    }
+    actions.push(`<button class="btn-delete-bl btn btn-small" data-id="${bl.id}" title="${t('backlinks.delete')}">x</button>`);
+
+    return `
+    <div class="list-item${dimClass}" data-id="${bl.id}">
+      <div class="list-item-header">
+        <input type="checkbox" class="list-item-checkbox bl-checkbox" data-id="${bl.id}">
+        <span class="list-item-title" title="${escapeHtml(bl.sourceTitle)}">${escapeHtml(bl.sourceTitle || bl.sourceDomain)}</span>
+        <span class="badge badge-${group}">${t('backlinks.grp' + group.charAt(0).toUpperCase() + group.slice(1))}</span>
+        <a class="list-item-link" href="${escapeHtml(bl.sourceUrl)}" target="_blank" title="${escapeHtml(bl.sourceUrl)}">&#x1F517;</a>
+      </div>
+      <div class="list-item-meta">
+        <span title="${escapeHtml(bl.sourceUrl)}">${escapeHtml(bl.sourceDomain || '')}</span>
+        ${bl.ascore ? `<span>Score:${bl.ascore}</span>` : ''}
+        ${bl.ugc ? '<span class="badge badge-ugc">UGC</span>' : ''}
+        ${bl.nofollow ? '<span>nofollow</span>' : ''}
+        ${bl.firstSeen ? `<span>${bl.firstSeen.substring(0, 10)}</span>` : ''}
+        ${actions.join('')}
+      </div>
+      ${extraInfo}
+    </div>`;
+  }).join('');
+
+  // Wire up item action buttons
   list.querySelectorAll('.btn-reverify').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -182,53 +344,46 @@ async function loadBacklinksList() {
       const url = btn.dataset.url;
       btn.disabled = true;
       btn.textContent = '...';
-
       try {
         const { tabId } = await chrome.runtime.sendMessage({ type: 'analyzeUrl', url });
-        const verification = await chrome.runtime.sendMessage({
-          type: 'verifyComment', tabId, commentText: '', website: ''
-        });
+        const verification = await chrome.runtime.sendMessage({ type: 'verifyComment', tabId, commentText: '', website: '' });
         await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
-
-        // Find and update the backlink
         const allBl = await getAllRecords(STORES.BACKLINKS);
         const bl = allBl.find(b => b.id === blId);
         if (bl) {
-          if (verification.status === 'confirmed') {
-            bl.status = 'commented';
-          } else if (verification.status === 'rejected') {
-            bl.status = 'publish_failed';
-          } else {
-            bl.status = 'pending_moderation';
-          }
+          bl.status = verification.status === 'confirmed' ? 'commented' : verification.status === 'rejected' ? 'publish_failed' : 'pending_moderation';
           bl.lastVerified = new Date().toISOString();
-          bl.lastVerifyResult = verification;
           await updateRecord(STORES.BACKLINKS, bl);
         }
         await loadBacklinksList();
-      } catch {
-        btn.textContent = t('backlinks.reverify');
-        btn.disabled = false;
-      }
+      } catch { btn.textContent = t('backlinks.reverify'); btn.disabled = false; }
     });
   });
 
-  // Retry button: reset to commentable so it can be published again
   list.querySelectorAll('.btn-retry').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
       const blId = parseInt(btn.dataset.id);
       const allBl = await getAllRecords(STORES.BACKLINKS);
       const bl = allBl.find(b => b.id === blId);
-      if (bl) {
-        bl.status = 'commentable';
-        delete bl.errorMessage;
-        await updateRecord(STORES.BACKLINKS, bl);
-        await loadBacklinksList();
-      }
+      if (bl) { bl.status = 'commentable'; delete bl.errorMessage; await updateRecord(STORES.BACKLINKS, bl); await loadBacklinksList(); }
     });
   });
 
+  list.querySelectorAll('.btn-delete-bl').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await deleteRecord(STORES.BACKLINKS, parseInt(btn.dataset.id));
+      await loadBacklinksList();
+    });
+  });
+
+  // Checkbox change → update batch bar
+  list.querySelectorAll('.bl-checkbox').forEach(cb => {
+    cb.addEventListener('change', updateBatchBar);
+  });
+
+  // Pagination
   const pagination = document.getElementById('pagination');
   if (totalPages > 1) {
     pagination.hidden = false;
@@ -238,20 +393,76 @@ async function loadBacklinksList() {
   } else {
     pagination.hidden = true;
   }
+
+  updateBatchBar();
 }
 
-document.getElementById('filter-status').addEventListener('change', () => {
+// Status bar chip click
+document.querySelectorAll('.status-chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    document.querySelectorAll('.status-chip').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    currentFilter = chip.dataset.filter;
+    currentPage = 1;
+    loadBacklinksList();
+  });
+});
+
+// Search input
+document.getElementById('bl-search').addEventListener('input', () => {
   currentPage = 1;
   loadBacklinksList();
 });
 
+// Sort change
+document.getElementById('bl-sort').addEventListener('change', () => loadBacklinksList());
+
+// Pagination
 document.getElementById('btn-prev').addEventListener('click', () => {
   if (currentPage > 1) { currentPage--; loadBacklinksList(); }
 });
-
 document.getElementById('btn-next').addEventListener('click', () => {
   currentPage++;
   loadBacklinksList();
+});
+
+// Batch action bar
+function updateBatchBar() {
+  const checked = document.querySelectorAll('.bl-checkbox:checked');
+  const bar = document.getElementById('batch-bar');
+  if (checked.length > 0) {
+    bar.hidden = false;
+    document.getElementById('batch-count').textContent = t('backlinks.selectedCount', { count: checked.length });
+  } else {
+    bar.hidden = true;
+  }
+}
+
+document.getElementById('bl-select-all').addEventListener('change', (e) => {
+  document.querySelectorAll('.bl-checkbox').forEach(cb => { cb.checked = e.target.checked; });
+  updateBatchBar();
+});
+
+document.getElementById('btn-batch-delete').addEventListener('click', async () => {
+  const ids = [...document.querySelectorAll('.bl-checkbox:checked')].map(cb => parseInt(cb.dataset.id));
+  if (ids.length === 0) return;
+  if (!confirm(t('backlinks.deleteConfirm', { count: ids.length }))) return;
+  for (const id of ids) { await deleteRecord(STORES.BACKLINKS, id); }
+  await loadBacklinksList();
+});
+
+document.getElementById('btn-batch-retry').addEventListener('click', async () => {
+  const ids = [...document.querySelectorAll('.bl-checkbox:checked')].map(cb => parseInt(cb.dataset.id));
+  const allBl = await getAllRecords(STORES.BACKLINKS);
+  for (const id of ids) {
+    const bl = allBl.find(b => b.id === id);
+    if (bl && ['publish_failed', 'error', 'captcha_blocked', 'not_commentable'].includes(bl.status)) {
+      bl.status = 'commentable';
+      delete bl.errorMessage;
+      await updateRecord(STORES.BACKLINKS, bl);
+    }
+  }
+  await loadBacklinksList();
 });
 
 // Stop analyze button

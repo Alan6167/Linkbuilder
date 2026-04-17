@@ -74,7 +74,7 @@ const messageHandlers = {
   },
 
   // Execute comment form fill - runs in all frames, uses the one that filled successfully
-  async fillCommentForm({ tabId, formData, fieldSelectors, frameId }) {
+  async fillCommentForm({ tabId, formData, fieldSelectors, frameId, honeypotFields }) {
     const target = frameId != null
       ? { tabId, frameIds: [frameId] }
       : { tabId, allFrames: true };
@@ -82,7 +82,7 @@ const messageHandlers = {
     const results = await chrome.scripting.executeScript({
       target,
       func: fillForm,
-      args: [formData, fieldSelectors]
+      args: [formData, fieldSelectors, honeypotFields]
     });
 
     // Prefer a frame that actually filled the comment
@@ -253,7 +253,71 @@ function analyzePageInline() {
     // Detect CAPTCHA type
     formInfo.captcha = detectCaptcha(commentForm);
 
+    // Site intelligence
+    addSiteIntelligence(formInfo, commentForm);
+
     return formInfo;
+  }
+
+  function addSiteIntelligence(info, form) {
+    // WordPress detection
+    info.isWordPress = !!(
+      document.querySelector('meta[name="generator"][content*="WordPress" i]') ||
+      document.querySelector('link[href*="wp-content"], link[href*="wp-includes"]') ||
+      document.querySelector('#wpadminbar') ||
+      typeof window.wp !== 'undefined'
+    );
+
+    // Check existing comments for <a> tags (wp_kses allows HTML links)
+    const commentArea = document.querySelector('#comments, .comments-area, .comment-list, .commentlist, ol.comments, ul.comments');
+    if (commentArea) {
+      const commentLinks = commentArea.querySelectorAll('.comment-content a[href], .comment-body a[href]');
+      info.wpKsesAllowsLinks = commentLinks.length > 0;
+
+      if (commentLinks.length > 0) {
+        const rels = new Set();
+        for (const link of commentLinks) {
+          const rel = (link.getAttribute('rel') || '').trim().toLowerCase();
+          if (rel) rels.add(rel);
+        }
+        info.commentLinkRels = [...rels];
+      }
+    } else {
+      info.wpKsesAllowsLinks = null;
+    }
+
+    // Blockers
+    info.blockers = [];
+    if (document.querySelector('script[src*="cleantalk" i], #ct_checkjs, input[name="ct_checkjs"], input[name*="cleantalk" i]')) {
+      info.blockers.push('cleantalk');
+    }
+    if (document.querySelector('iframe[src*="jetpack"], iframe[name="jetpack_remote_comment"], .jetpack-comments-iframe')) {
+      info.blockers.push('jetpack_iframe');
+    }
+
+    // Honeypot detection — hidden inputs/textareas that must stay empty
+    info.honeypotFields = [];
+    if (form) {
+      for (const el of form.querySelectorAll('input, textarea')) {
+        const n = (el.name || '').toLowerCase();
+        const id = (el.id || '').toLowerCase();
+        if (['author', 'email', 'url', 'website', 'comment', 'submit', 'comment_post_id', 'comment_parent'].some(k => n.includes(k) || id.includes(k))) continue;
+        if (el.type === 'submit' || el.type === 'hidden') continue;
+
+        const style = window.getComputedStyle(el);
+        const ps = el.parentElement ? window.getComputedStyle(el.parentElement) : null;
+        const isHidden = style.display === 'none' || style.visibility === 'hidden' ||
+          style.opacity === '0' || (style.position === 'absolute' && (parseInt(style.left) < -999 || parseInt(style.top) < -999)) ||
+          el.offsetWidth === 0 || el.offsetHeight === 0 ||
+          (ps && (ps.display === 'none' || ps.visibility === 'hidden' || ps.opacity === '0'));
+
+        const isKnownHoneypot = /^(ak_hp_|alt_s$|wantispam|hpot|hp_|trap|pot_)/i.test(n);
+
+        if (isHidden || isKnownHoneypot) {
+          info.honeypotFields.push(getSelector(el));
+        }
+      }
+    }
   }
 
   function detectCaptcha(form) {
@@ -434,6 +498,7 @@ function analyzePageInline() {
     formInfo.fields.website = findNearbyInput(container, ['url', 'website', 'site']);
     formInfo.submitButton = findNearbySubmit(container);
 
+    addSiteIntelligence(formInfo, standaloneTextarea.closest('form'));
     return formInfo;
   }
 
@@ -462,6 +527,7 @@ function analyzePageInline() {
       formInfo.fields.website = findNearbyInput(container, ['url', 'website', 'site']);
       formInfo.submitButton = findNearbySubmit(container);
 
+      addSiteIntelligence(formInfo, el.closest('form'));
       return formInfo;
     }
   }
@@ -498,6 +564,13 @@ function analyzePageInline() {
 function verifyCommentOnPage(commentText, website) {
   const pageText = document.body?.innerText || '';
   const pageHtml = document.body?.innerHTML || '';
+  const currentUrl = window.location.href;
+
+  // URL-based instant detection
+  const instantPublish = currentUrl.includes('#comment-');
+  if (currentUrl.includes('unapproved=')) {
+    return { verified: false, status: 'pending_moderation', reason: 'Comment awaiting moderation (unapproved in URL)' };
+  }
 
   // Check for common error/moderation messages
   const moderationPatterns = [
@@ -566,12 +639,14 @@ function verifyCommentOnPage(commentText, website) {
   // Check if comment text snippet appears on page (first 50 chars)
   const snippet = commentText.substring(0, 50).trim();
   if (snippet && pageText.includes(snippet)) {
-    return { verified: true, status: 'confirmed', reason: 'Comment text found on page' };
+    const dfResult = checkDofollow(website);
+    return { verified: true, status: 'confirmed', reason: 'Comment text found on page', ...dfResult };
   }
 
   // Check if website URL appears in a new comment/link
   if (website && pageHtml.includes(website)) {
-    return { verified: true, status: 'confirmed', reason: 'Website link found on page' };
+    const dfResult = checkDofollow(website);
+    return { verified: true, status: 'confirmed', reason: 'Website link found on page', ...dfResult };
   }
 
   // If form is gone and no errors, likely submitted successfully (moderation or redirect)
@@ -582,6 +657,28 @@ function verifyCommentOnPage(commentText, website) {
 
   // Form still exists - might mean nothing happened or page didn't reload
   return { verified: false, status: 'unknown', reason: 'Could not verify - form still present' };
+
+  // Dofollow verification: check rel attribute on the posted link
+  function checkDofollow(site) {
+    if (!site) return {};
+    try {
+      const domain = new URL(site).hostname.replace('www.', '');
+      const link = document.querySelector(`a[href*="${domain}"]`);
+      if (!link) return {};
+
+      const rel = (link.getAttribute('rel') || '').trim().toLowerCase();
+      const parts = rel.split(/\s+/).filter(Boolean);
+      const hasNofollow = parts.includes('nofollow');
+      const hasUgc = parts.includes('ugc');
+
+      return {
+        dofollow: !hasNofollow && !hasUgc,
+        postedRel: rel || '(none)'
+      };
+    } catch {
+      return {};
+    }
+  }
 }
 
 // Injected function: solve CAPTCHA (math calculation or text/digit input)
@@ -720,8 +817,16 @@ function solveCaptchaOnPage(captchaInfo) {
 }
 
 // Injected function: fill form fields
-async function fillForm(formData, fieldSelectors) {
+async function fillForm(formData, fieldSelectors, honeypotFields) {
   const results = {};
+
+  // Clear honeypot fields — these must stay empty to pass anti-spam
+  if (honeypotFields?.length > 0) {
+    for (const sel of honeypotFields) {
+      const el = document.querySelector(sel);
+      if (el && el.value) { el.value = ''; }
+    }
+  }
 
   // React/Vue-compatible value setter
   function setNativeValue(element, value) {
@@ -858,6 +963,13 @@ function clickSubmit(submitSelector) {
   if (button) {
     button.click();
     return { success: true };
+  }
+
+  // Fallback: use HTMLFormElement.prototype.submit to bypass name="submit" shadow
+  const form = document.querySelector('#commentform, .comment-form, form[action*="comment"]');
+  if (form) {
+    HTMLFormElement.prototype.submit.call(form);
+    return { success: true, method: 'form_submit' };
   }
 
   return { success: false, error: 'Submit button not found' };

@@ -304,7 +304,10 @@ async function loadBacklinksList() {
     }
     if (bl.commentedAt && ['commented', 'pending_moderation'].includes(bl.status)) {
       const sites = bl.commentedWith?.join(', ') || '';
-      extraInfo = `<div class="list-item-published">${bl.commentedAt.substring(0, 10)}${sites ? ' · ' + escapeHtml(sites) : ''}</div>`;
+      let dfTag = '';
+      if (bl.dofollowResult === true) dfTag = ' · <span class="dofollow-yes" title="rel=' + escapeHtml(bl.postedRel || '') + '">dofollow</span>';
+      else if (bl.dofollowResult === false) dfTag = ' · <span class="dofollow-no" title="rel=' + escapeHtml(bl.postedRel || '') + '">nofollow</span>';
+      extraInfo = `<div class="list-item-published">${bl.commentedAt.substring(0, 10)}${sites ? ' · ' + escapeHtml(sites) : ''}${dfTag}</div>`;
     }
 
     const groupKey = 'backlinks.grp' + group.charAt(0).toUpperCase() + group.slice(1);
@@ -1038,9 +1041,43 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           addLog(logEntries, t('publish.formInFrame', { frameId }), 'info');
         }
 
+        // Check blockers BEFORE calling AI
+        const dofollowBypass = document.getElementById('pub-dofollow-bypass').checked;
+        let bypassActive = false;
+
+        if (freshAnalysis?.blockers?.length > 0) {
+          for (const blocker of freshAnalysis.blockers) {
+            addLog(logEntries, t('publish.blockerDetected', { blocker }), 'error');
+          }
+          if (freshAnalysis.blockers.includes('cleantalk') || freshAnalysis.blockers.includes('jetpack_iframe')) {
+            bl.status = 'captcha_blocked';
+            bl.errorMessage = `Blocker: ${freshAnalysis.blockers.join(', ')}`;
+            await updateRecord(STORES.BACKLINKS, bl);
+            pubStats.captcha++;
+            if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
+            tabId = null;
+            break;
+          }
+        }
+
+        if (dofollowBypass) {
+          if (!freshAnalysis?.isWordPress) {
+            addLog(logEntries, t('publish.notWordPress'), 'info');
+          } else if (freshAnalysis?.wpKsesAllowsLinks === false) {
+            addLog(logEntries, t('publish.wpKsesNoLinks'), 'info');
+          } else {
+            bypassActive = true;
+            commentConfig.linkFormat = 'html';
+            commentConfig.embedLink = true;
+            if (freshAnalysis?.commentLinkRels?.length > 0) {
+              addLog(logEntries, t('publish.existingRel', { rel: freshAnalysis.commentLinkRels.join(', ') }), 'info');
+            }
+          }
+        }
+
         // Now we know the form is usable — call AI to generate comment
         addLog(logEntries, t('publish.generating'), 'info');
-        const commentText = await generateComment(apiKey, {
+        let commentText = await generateComment(apiKey, {
           title: pageInfo.title,
           content: pageInfo.contentExcerpt,
           url: bl.sourceUrl,
@@ -1050,11 +1087,21 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           siteDescription: site.siteDescription || ''
         }, commentConfig);
 
+        // Dofollow bypass: inject \n into href
+        if (bypassActive) {
+          commentText = commentText.replace(
+            /(<a\s+href="[^"]+)(">)/gi,
+            '$1\n$2'
+          );
+          addLog(logEntries, t('publish.dofollowInjected'), 'info');
+        }
+
         addLog(logEntries, t('publish.comment', { text: commentText.substring(0, 80) }), 'info');
 
         const formData = { name, email, website, comment: commentText };
+        const honeypotFields = freshAnalysis?.honeypotFields || [];
         const fillResult = await chrome.runtime.sendMessage({
-          type: 'fillCommentForm', tabId, formData, fieldSelectors, frameId
+          type: 'fillCommentForm', tabId, formData, fieldSelectors, frameId, honeypotFields
         });
 
         if (!fillResult.success) {
@@ -1081,6 +1128,8 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         }
 
         let commentStatus = 'unknown';
+        let dofollowVerified = undefined; // true/false/undefined
+        let postedRel = undefined;
 
         if (mode === 'auto') {
           const submitResult = await chrome.runtime.sendMessage({
@@ -1104,6 +1153,17 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
             const logType = commentStatus === 'confirmed' ? 'success'
               : (commentStatus === 'rejected' || commentStatus === 'captcha') ? 'error' : 'info';
             addLog(logEntries, `${t(statusKey)}: ${verification.reason}`, logType);
+
+            // Log dofollow result
+            if (verification.dofollow === true) {
+              addLog(logEntries, t('publish.dofollowSuccess', { rel: verification.postedRel }), 'success');
+              dofollowVerified = true;
+              postedRel = verification.postedRel;
+            } else if (verification.dofollow === false) {
+              addLog(logEntries, t('publish.dofollowFail', { rel: verification.postedRel }), 'error');
+              dofollowVerified = false;
+              postedRel = verification.postedRel;
+            }
 
             if (commentStatus === 'confirmed') pubStats.confirmed++;
             else if (commentStatus === 'captcha') pubStats.captcha++;
@@ -1131,6 +1191,8 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           name, email, website, mode,
           siteProfile: site.profileName,
           status: commentStatus,
+          dofollow: dofollowVerified,
+          postedRel,
           publishedAt: new Date().toISOString()
         }]);
 
@@ -1181,6 +1243,10 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
     bl.commentedAt = new Date().toISOString();
     bl.commentedWith = selectedSites.map(s => s.profileName);
     bl.verifyResults = results;
+    if (dofollowVerified !== undefined) {
+      bl.dofollowResult = dofollowVerified;
+      bl.postedRel = postedRel;
+    }
     delete bl._siteResults;
     await updateRecord(STORES.BACKLINKS, bl);
 

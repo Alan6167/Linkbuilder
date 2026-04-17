@@ -766,18 +766,25 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
 
         addLog(logEntries, t('publish.comment', { text: commentText.substring(0, 80) }), 'info');
 
-        // Re-analyze the page for fresh field selectors (stored analysis may be outdated)
+        // Re-analyze the page for fresh field selectors (searches all frames)
         const freshAnalysis = await chrome.runtime.sendMessage({ type: 'analyzePageViaContentScript', tabId });
         const fieldSelectors = (freshAnalysis && freshAnalysis.fields && Object.keys(freshAnalysis.fields).length > 0)
           ? freshAnalysis.fields
           : (bl.commentFormAnalysis?.fields || {});
+        const frameId = freshAnalysis?.frameId;
 
         if (!fieldSelectors.comment) {
           throw new Error(t('publish.noCommentField'));
         }
 
+        if (frameId != null && frameId !== 0) {
+          addLog(logEntries, t('publish.formInFrame', { frameId }), 'info');
+        }
+
         const formData = { name, email, website, comment: commentText };
-        const fillResult = await chrome.runtime.sendMessage({ type: 'fillCommentForm', tabId, formData, fieldSelectors });
+        const fillResult = await chrome.runtime.sendMessage({
+          type: 'fillCommentForm', tabId, formData, fieldSelectors, frameId
+        });
 
         if (!fillResult.success) {
           const details = Object.entries(fillResult.results || {})
@@ -796,7 +803,8 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           const submitResult = await chrome.runtime.sendMessage({
             type: 'submitCommentForm',
             tabId,
-            submitSelector: bl.commentFormAnalysis?.submitButton
+            submitSelector: freshAnalysis?.submitButton || bl.commentFormAnalysis?.submitButton,
+            frameId
           });
 
           if (submitResult.success) {
@@ -851,6 +859,20 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         pubStats.failed++;
         if (!bl._siteResults) bl._siteResults = [];
         bl._siteResults.push('error');
+
+        // Log detailed failure info for analysis
+        await addRecords(STORES.FAILURE_LOGS, [{
+          sourceUrl: bl.sourceUrl,
+          sourceDomain: bl.sourceDomain,
+          sourceTitle: bl.sourceTitle,
+          siteProfile: site.profileName,
+          failureType: classifyFailure(err.message),
+          errorMessage: err.message,
+          stage: 'publish',
+          formAnalysis: bl.commentFormAnalysis || null,
+          loggedAt: new Date().toISOString()
+        }]);
+
         if (tabId) {
           try { await chrome.runtime.sendMessage({ type: 'closeTab', tabId }); } catch {}
         }
@@ -898,6 +920,20 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
     failed: pubStats.failed,
     captcha: pubStats.captcha
   }), pubStats.failed > 0 ? 'error' : 'success');
+}
+
+// Classify failure type for analysis
+function classifyFailure(errorMessage) {
+  const msg = (errorMessage || '').toLowerCase();
+  if (msg.includes('textarea not found') || msg.includes('no_selector')) return 'no_comment_field';
+  if (msg.includes('not_found') || msg.includes('form not found')) return 'form_not_found';
+  if (msg.includes('set_failed')) return 'react_or_vue_form';
+  if (msg.includes('submit') || msg.includes('button')) return 'submit_button_issue';
+  if (msg.includes('api error') || msg.includes('gemini')) return 'ai_api_error';
+  if (msg.includes('fetch') || msg.includes('network')) return 'network_error';
+  if (msg.includes('tab') || msg.includes('timeout')) return 'tab_issue';
+  if (msg.includes('captcha')) return 'captcha';
+  return 'other';
 }
 
 function addLog(container, message, type = 'info') {
@@ -971,6 +1007,8 @@ async function loadSettings() {
   document.getElementById('db-backlinks').textContent = await getRecordCount(STORES.BACKLINKS);
   document.getElementById('db-comments').textContent = await getRecordCount(STORES.COMMENTS);
   document.getElementById('db-sites').textContent = await getRecordCount(STORES.DISCOVERED_SITES);
+
+  await loadFailureSummary();
 }
 
 // Provider change updates hint
@@ -1104,12 +1142,65 @@ document.getElementById('import-sites-input').addEventListener('change', async (
   }
 });
 
+// Export failure logs
+document.getElementById('btn-export-failures').addEventListener('click', async () => {
+  const logs = await getAllRecords(STORES.FAILURE_LOGS);
+  if (logs.length === 0) {
+    alert(t('common.noData'));
+    return;
+  }
+  // Export as JSON for full detail (including formAnalysis)
+  const json = JSON.stringify(logs, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `linkbuilder-failures-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+// Clear failure logs
+document.getElementById('btn-clear-failures').addEventListener('click', async () => {
+  if (!confirm(t('settings.clearFailuresConfirm'))) return;
+  await clearStore(STORES.FAILURE_LOGS);
+  await loadFailureSummary();
+});
+
+// Load and display failure summary (grouped by type)
+async function loadFailureSummary() {
+  const logs = await getAllRecords(STORES.FAILURE_LOGS);
+  const summary = document.getElementById('failure-summary');
+  const counts = document.getElementById('failure-counts');
+
+  if (logs.length === 0) {
+    summary.hidden = true;
+    return;
+  }
+
+  const byType = {};
+  for (const log of logs) {
+    const type = log.failureType || 'other';
+    byType[type] = (byType[type] || 0) + 1;
+  }
+
+  const sortedTypes = Object.entries(byType).sort((a, b) => b[1] - a[1]);
+  counts.innerHTML = sortedTypes.map(([type, count]) => `
+    <div class="failure-count-row">
+      <span>${t('failure.' + type) || type}</span>
+      <span class="count">${count}</span>
+    </div>
+  `).join('');
+  summary.hidden = false;
+}
+
 document.getElementById('btn-clear-data').addEventListener('click', async () => {
   if (!confirm(t('settings.clearConfirm'))) return;
 
   await clearStore(STORES.BACKLINKS);
   await clearStore(STORES.COMMENTS);
   await clearStore(STORES.DISCOVERED_SITES);
+  await clearStore(STORES.FAILURE_LOGS);
 
   await loadSettings();
   alert(t('settings.cleared'));

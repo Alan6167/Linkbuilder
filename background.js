@@ -25,17 +25,24 @@ const messageHandlers = {
   },
 
   // Analyze page using the content script (local, no API needed)
+  // Searches main frame + all iframes (for Jetpack / embedded comment systems)
   async analyzePageViaContentScript({ tabId }) {
     try {
-      const response = await chrome.tabs.sendMessage(tabId, { type: 'analyzePage' });
-      return response;
-    } catch {
-      // Content script not ready, try injecting and running inline
       const results = await chrome.scripting.executeScript({
-        target: { tabId },
+        target: { tabId, allFrames: true },
         func: analyzePageInline
       });
-      return results[0]?.result || { hasCommentForm: false, error: 'Script injection failed' };
+
+      // Collect per-frame results, pick the one that has a comment form
+      const found = results.find(r => r.result && r.result.hasCommentForm);
+      if (found) {
+        return { ...found.result, frameId: found.frameId };
+      }
+
+      // No frame has a form — return the main frame's result
+      return results[0]?.result || { hasCommentForm: false, error: 'No form found' };
+    } catch (err) {
+      return { hasCommentForm: false, error: err.message };
     }
   },
 
@@ -66,23 +73,40 @@ const messageHandlers = {
     return { success: true };
   },
 
-  // Execute comment form fill in a tab
-  async fillCommentForm({ tabId, formData, fieldSelectors }) {
+  // Execute comment form fill - runs in all frames, uses the one that filled successfully
+  async fillCommentForm({ tabId, formData, fieldSelectors, frameId }) {
+    const target = frameId != null
+      ? { tabId, frameIds: [frameId] }
+      : { tabId, allFrames: true };
+
     const results = await chrome.scripting.executeScript({
-      target: { tabId },
+      target,
       func: fillForm,
       args: [formData, fieldSelectors]
     });
+
+    // Prefer a frame that actually filled the comment
+    const successful = results.find(r => r.result?.success);
+    if (successful) return { ...successful.result, frameId: successful.frameId };
+
     return results[0]?.result || { success: false };
   },
 
-  // Submit comment form in a tab
-  async submitCommentForm({ tabId, submitSelector }) {
+  // Submit comment form - runs in all frames
+  async submitCommentForm({ tabId, submitSelector, frameId }) {
+    const target = frameId != null
+      ? { tabId, frameIds: [frameId] }
+      : { tabId, allFrames: true };
+
     const results = await chrome.scripting.executeScript({
-      target: { tabId },
+      target,
       func: clickSubmit,
       args: [submitSelector]
     });
+
+    const successful = results.find(r => r.result?.success);
+    if (successful) return successful.result;
+
     return results[0]?.result || { success: false };
   },
 
@@ -320,23 +344,54 @@ function verifyCommentOnPage(commentText, website) {
 }
 
 // Injected function: fill form fields
-function fillForm(formData, fieldSelectors) {
+async function fillForm(formData, fieldSelectors) {
   const results = {};
 
   // React/Vue-compatible value setter
   function setNativeValue(element, value) {
-    const proto = Object.getPrototypeOf(element);
-    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-    const parentSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
-      || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+    const tag = element.tagName;
+    const parentSetter = tag === 'TEXTAREA'
+      ? Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      : Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
 
-    if (setter && setter !== parentSetter && parentSetter) {
+    if (parentSetter) {
       parentSetter.call(element, value);
     } else {
       element.value = value;
     }
   }
 
+  function findElement(selector) {
+    if (!selector) return null;
+    let el = null;
+    if (selector.selector) {
+      try { el = document.querySelector(selector.selector); } catch {}
+    }
+    if (!el && selector.name) {
+      el = document.querySelector(`[name="${selector.name}"]`);
+    }
+    return el;
+  }
+
+  // Step 1: focus/click the comment textarea first to trigger progressive disclosure
+  // (Jetpack / Squarespace / modern blogs reveal name/email fields only after interacting with textarea)
+  const commentEl = findElement(fieldSelectors.comment);
+  if (commentEl) {
+    commentEl.scrollIntoView({ block: 'center' });
+    commentEl.click();
+    commentEl.focus();
+    // Wait for fields to be revealed by JS
+    await new Promise(r => setTimeout(r, 800));
+  } else {
+    return {
+      success: false,
+      results: { comment: 'not_found' },
+      filledCount: 0,
+      totalCount: Object.keys(formData).length
+    };
+  }
+
+  // Step 2: fill each field
   for (const [field, value] of Object.entries(formData)) {
     const selector = fieldSelectors[field];
     if (!selector) {
@@ -344,13 +399,8 @@ function fillForm(formData, fieldSelectors) {
       continue;
     }
 
-    let element = null;
-    if (selector.selector) {
-      try { element = document.querySelector(selector.selector); } catch {}
-    }
-    if (!element && selector.name) {
-      element = document.querySelector(`[name="${selector.name}"]`);
-    }
+    // Re-query elements (some may have just been rendered by JS)
+    const element = findElement(selector);
 
     if (element) {
       element.focus();
@@ -359,7 +409,6 @@ function fillForm(formData, fieldSelectors) {
       element.dispatchEvent(new Event('change', { bubbles: true }));
       element.dispatchEvent(new Event('blur', { bubbles: true }));
 
-      // Verify value was actually set
       if (element.value === value || element.value.length > 0) {
         results[field] = 'filled';
       } else {
@@ -370,7 +419,6 @@ function fillForm(formData, fieldSelectors) {
     }
   }
 
-  // Success only if the comment field was actually filled
   const commentFilled = results.comment === 'filled';
   const filledCount = Object.values(results).filter(v => v === 'filled').length;
 

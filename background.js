@@ -268,13 +268,23 @@ function analyzePageInline() {
     const captchaInput = findCaptchaInput(form);
     if (!captchaInput) return null;
 
-    // Try to extract math expression
-    const expression = findMathExpression(captchaInput, form);
-    if (expression) {
-      return { type: 'math', inputSelector: getSelector(captchaInput), expression };
+    // Extract content from CAPTCHA display area
+    const result = extractCaptchaContent(captchaInput, form);
+    if (result) {
+      result.inputSelector = getSelector(captchaInput);
+      return result;
     }
 
-    // Has CAPTCHA input but can't parse expression → unsolvable
+    // Has CAPTCHA input — check if it has images (visual CAPTCHA)
+    const container = captchaInput.closest('[class*="captcha" i], [class*="cptch" i], [id*="captcha" i]') || captchaInput.parentElement;
+    if (container) {
+      const imgs = container.querySelectorAll('img, canvas, svg');
+      if (imgs.length > 0) {
+        return { type: 'image', provider: 'image_captcha' };
+      }
+    }
+
+    // Has CAPTCHA input but no content and no images
     return { type: 'unsolvable', provider: 'unknown_captcha' };
   }
 
@@ -303,51 +313,77 @@ function analyzePageInline() {
     return null;
   }
 
-  function findMathExpression(input, form) {
-    const sources = [];
-
-    // Labels
-    const label = input.labels?.[0] || document.querySelector(`label[for="${input.id}"]`);
-    if (label) sources.push(label.textContent);
-
-    // Captcha container
+  function extractCaptchaContent(input, form) {
     const container = input.closest('[class*="captcha" i], [class*="cptch" i], [id*="captcha" i]') || input.parentElement;
+    const allText = [];
+
+    // Strategy 1: Read text from styled span/div elements (common in BestWebSoft Captcha etc.)
     if (container) {
-      // Collect text from spans/divs (styled digit blocks)
       const spans = container.querySelectorAll('span, div, strong, b, em, i, p, td');
       const chars = [];
       for (const span of spans) {
         if (span.contains(input)) continue;
-        if (span.querySelector('input, textarea')) continue;
+        if (span.querySelector('input, textarea, span, div')) continue; // only leaf elements
         const text = span.textContent.trim();
-        if (text && text.length <= 10) chars.push(text);
+        if (text && text.length <= 5) chars.push(text);
       }
-      if (chars.length >= 2) sources.push(chars.join(' '));
+      if (chars.length >= 2) allText.push(chars.join(' '));
 
-      // Also try the container's text with input removed
+      // Container text with input/buttons removed
       const clone = container.cloneNode(true);
-      clone.querySelectorAll('input, button, img[src*="reload"], img[src*="refresh"]').forEach(el => el.remove());
-      sources.push(clone.textContent);
+      clone.querySelectorAll('input, button, img, script, style').forEach(el => el.remove());
+      const cleanText = clone.textContent.trim();
+      if (cleanText) allText.push(cleanText);
     }
 
-    // Previous siblings
+    // Strategy 2: Labels
+    const label = input.labels?.[0] || document.querySelector(`label[for="${input.id}"]`);
+    if (label) allText.push(label.textContent);
+
+    // Strategy 3: Previous siblings
     let el = input.previousElementSibling;
     while (el) {
-      sources.push(el.textContent);
+      if (!el.querySelector('input, textarea')) allText.push(el.textContent);
       el = el.previousElementSibling;
     }
 
-    // Input attributes
+    // Strategy 4: Input attributes
     for (const attr of ['aria-label', 'placeholder', 'title']) {
       const val = input.getAttribute(attr);
-      if (val) sources.push(val);
+      if (val) allText.push(val);
     }
 
-    // Try each source
-    for (const src of sources) {
-      const expr = extractMathFromText(src);
-      if (expr) return expr;
+    // Strategy 5: Read alt text from images (some CAPTCHAs use <img> with alt)
+    if (container) {
+      const imgs = container.querySelectorAll('img:not([src*="reload"]):not([src*="refresh"]):not([alt=""])');
+      const altChars = [];
+      for (const img of imgs) {
+        if (img.alt && img.alt.length <= 10 && !/reload|refresh|captcha/i.test(img.alt)) {
+          altChars.push(img.alt.trim());
+        }
+      }
+      if (altChars.length > 0) allText.push(altChars.join(' '));
     }
+
+    // Analyze collected text to determine CAPTCHA type
+    for (const text of allText) {
+      if (!text || text.trim().length === 0) continue;
+
+      // Check if it looks like a math expression (has arithmetic operators as words or symbols)
+      if (/\bplus\b|\bminus\b|\btimes\b|\bdivided\b|加|减|乘|除/i.test(text) ||
+          /\d\s*[+\-]\s*\d/.test(text) ||
+          /\d\s*[×÷]\s*\d/.test(text)) {
+        const expr = extractMathFromText(text);
+        if (expr) return { type: 'math', expression: expr };
+      }
+
+      // Otherwise: extract digits as "type what you see" answer
+      const digits = text.replace(/[^\d]/g, '');
+      if (digits.length >= 2) {
+        return { type: 'text', answer: digits };
+      }
+    }
+
     return null;
   }
 
@@ -368,7 +404,7 @@ function analyzePageInline() {
     }
 
     // Normalize operators
-    s = s.replace(/×|✕|✖|⋅|·/g, '*');
+    s = s.replace(/×|✕|✖/g, '*');
     s = s.replace(/÷|∕/g, '/');
     s = s.replace(/−|–|—/g, '-');
     s = s.replace(/\bplus\b/gi, '+').replace(/\bminus\b/gi, '-');
@@ -548,10 +584,10 @@ function verifyCommentOnPage(commentText, website) {
   return { verified: false, status: 'unknown', reason: 'Could not verify - form still present' };
 }
 
-// Injected function: solve simple math CAPTCHA
+// Injected function: solve CAPTCHA (math calculation or text/digit input)
 function solveCaptchaOnPage(captchaInfo) {
-  if (!captchaInfo || captchaInfo.type !== 'math') {
-    return { solved: false, reason: 'not_math_captcha' };
+  if (!captchaInfo || (captchaInfo.type !== 'math' && captchaInfo.type !== 'text')) {
+    return { solved: false, reason: 'unsupported_type' };
   }
 
   // Find the CAPTCHA input
@@ -574,65 +610,90 @@ function solveCaptchaOnPage(captchaInfo) {
 
   if (!input) return { solved: false, reason: 'captcha_input_not_found' };
 
-  // Re-extract math expression from live DOM (may have changed since analysis)
-  let expression = captchaInfo.expression;
+  // Re-read live content from DOM (CAPTCHA may refresh between analysis and solve)
+  const liveContent = readLiveContent(input);
+  let answer = null;
 
-  // Also try live extraction
-  const container = input.closest('[class*="captcha" i], [class*="cptch" i], [id*="captcha" i]') || input.parentElement;
-  if (container) {
+  if (captchaInfo.type === 'text') {
+    // "Type what you see" — extract all digits from visible characters
+    answer = liveContent.digits || captchaInfo.answer;
+  } else if (captchaInfo.type === 'math') {
+    // Math expression — evaluate
+    const expr = liveContent.mathExpr || captchaInfo.expression;
+    if (expr) {
+      try {
+        const sanitized = expr.replace(/\s/g, '');
+        if (/^[\d+\-*/().]+$/.test(sanitized)) {
+          const result = new Function('return ' + sanitized)();
+          if (typeof result === 'number' && isFinite(result)) {
+            answer = String(Math.round(result));
+          }
+        }
+      } catch { /* eval failed */ }
+    }
+  }
+
+  if (!answer) return { solved: false, reason: 'no_answer', type: captchaInfo.type };
+
+  // Fill the input
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+  if (setter) setter.call(input, answer);
+  else input.value = answer;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+
+  return { solved: true, answer, type: captchaInfo.type };
+
+  function readLiveContent(captchaInput) {
+    const container = captchaInput.closest('[class*="captcha" i], [class*="cptch" i], [id*="captcha" i]') || captchaInput.parentElement;
+    const result = { digits: null, mathExpr: null };
+    if (!container) return result;
+
+    // Collect text from leaf elements (styled character blocks)
     const spans = container.querySelectorAll('span, div, strong, b, em, i, p, td');
     const chars = [];
     for (const span of spans) {
-      if (span.contains(input)) continue;
-      if (span.querySelector('input, textarea')) continue;
+      if (span.contains(captchaInput)) continue;
+      if (span.querySelector('input, textarea, span, div')) continue;
       const text = span.textContent.trim();
-      if (text && text.length <= 10) chars.push(text);
+      if (text && text.length <= 5) chars.push(text);
     }
+
+    // Also check images with alt text
+    const imgs = container.querySelectorAll('img');
+    for (const img of imgs) {
+      if (img.alt && img.alt.length <= 5 && !/reload|refresh|captcha/i.test(img.alt)) {
+        chars.push(img.alt.trim());
+      }
+    }
+
     if (chars.length >= 2) {
-      const liveExpr = normalizeMath(chars.join(' '));
-      if (liveExpr) expression = liveExpr;
+      const combined = chars.join(' ');
+
+      // Check for math operators
+      if (/\d\s*[+\-]\s*\d/.test(combined) || /\bplus\b|\bminus\b|\btimes\b/i.test(combined)) {
+        result.mathExpr = normalizeMath(combined);
+      }
+
+      // Extract all digits
+      const digits = combined.replace(/[^\d]/g, '');
+      if (digits.length >= 2) result.digits = digits;
     }
 
-    // Try full container text
-    if (!expression) {
+    // Fallback: full container text
+    if (!result.digits && !result.mathExpr) {
       const clone = container.cloneNode(true);
-      clone.querySelectorAll('input, button, img').forEach(el => el.remove());
-      const liveExpr = normalizeMath(clone.textContent);
-      if (liveExpr) expression = liveExpr;
-    }
-  }
+      clone.querySelectorAll('input, button, img, script, style').forEach(el => el.remove());
+      const text = clone.textContent.trim();
+      const digits = text.replace(/[^\d]/g, '');
+      if (digits.length >= 2) result.digits = digits;
 
-  // Try label
-  if (!expression) {
-    const label = input.labels?.[0] || document.querySelector(`label[for="${input.id}"]`);
-    if (label) expression = normalizeMath(label.textContent);
-  }
-
-  if (!expression) return { solved: false, reason: 'no_expression' };
-
-  // Evaluate
-  try {
-    const sanitized = expression.replace(/\s/g, '');
-    if (!/^[\d+\-*/().]+$/.test(sanitized)) {
-      return { solved: false, reason: 'invalid_expression', expression };
-    }
-    const answer = new Function('return ' + sanitized)();
-    if (typeof answer !== 'number' || !isFinite(answer)) {
-      return { solved: false, reason: 'eval_error', expression };
+      if (/\d\s*[+\-]\s*\d/.test(text)) {
+        result.mathExpr = normalizeMath(text);
+      }
     }
 
-    const result = Math.round(answer);
-
-    // Fill the input
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-    if (setter) setter.call(input, String(result));
-    else input.value = String(result);
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-
-    return { solved: true, answer: String(result), expression };
-  } catch {
-    return { solved: false, reason: 'eval_error', expression };
+    return result;
   }
 
   function normalizeMath(text) {
@@ -646,7 +707,7 @@ function solveCaptchaOnPage(captchaInfo) {
     for (const [w, n] of Object.entries(words)) {
       s = s.replace(new RegExp(`\\b${w}\\b`, 'gi'), String(n));
     }
-    s = s.replace(/×|✕|✖|⋅|·/g, '*');
+    s = s.replace(/×|✕|✖/g, '*');
     s = s.replace(/÷|∕/g, '/');
     s = s.replace(/−|–|—/g, '-');
     s = s.replace(/\bplus\b/gi, '+').replace(/\bminus\b/gi, '-');

@@ -1017,8 +1017,21 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           tabId = null;
           break; // skip ALL remaining sites for this page
         }
-        if (captchaInfo && captchaInfo.type === 'math') {
-          addLog(logEntries, t('publish.captchaMath', { expr: captchaInfo.expression }), 'info');
+        if (captchaInfo && captchaInfo.type === 'image') {
+          addLog(logEntries, t('publish.captchaImage'), 'error');
+          bl.status = 'captcha_blocked';
+          bl.errorMessage = 'Image CAPTCHA (visual recognition required)';
+          await updateRecord(STORES.BACKLINKS, bl);
+          pubStats.captcha++;
+          if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
+          tabId = null;
+          break; // skip ALL remaining sites for this page
+        }
+        if (captchaInfo && (captchaInfo.type === 'math' || captchaInfo.type === 'text')) {
+          const desc = captchaInfo.type === 'math'
+            ? t('publish.captchaMath', { expr: captchaInfo.expression })
+            : t('publish.captchaText', { digits: captchaInfo.answer });
+          addLog(logEntries, desc, 'info');
         }
 
         if (frameId != null && frameId !== 0) {
@@ -1055,13 +1068,13 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           total: fillResult.totalCount
         }), 'success');
 
-        // Solve math CAPTCHA if present
-        if (captchaInfo && captchaInfo.type === 'math') {
+        // Solve CAPTCHA if present (math or text type)
+        if (captchaInfo && (captchaInfo.type === 'math' || captchaInfo.type === 'text')) {
           const captchaResult = await chrome.runtime.sendMessage({
             type: 'solveCaptcha', tabId, captchaInfo, frameId
           });
           if (captchaResult.solved) {
-            addLog(logEntries, t('publish.captchaSolved', { expr: captchaResult.expression, answer: captchaResult.answer }), 'success');
+            addLog(logEntries, t('publish.captchaSolved', { expr: captchaResult.type === 'math' ? captchaResult.answer : '', answer: captchaResult.answer }), 'success');
           } else {
             addLog(logEntries, t('publish.captchaFailed', { reason: captchaResult.reason }), 'error');
           }

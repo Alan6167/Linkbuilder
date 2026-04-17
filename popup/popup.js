@@ -307,29 +307,32 @@ async function loadBacklinksList() {
       extraInfo = `<div class="list-item-published">${bl.commentedAt.substring(0, 10)}${sites ? ' · ' + escapeHtml(sites) : ''}</div>`;
     }
 
+    const groupKey = 'backlinks.grp' + group.charAt(0).toUpperCase() + group.slice(1);
+    const statusTooltip = t('backlinks.tip_' + group);
+
     const actions = [];
     if (['commented', 'pending_moderation'].includes(bl.status)) {
-      actions.push(`<button class="btn-reverify btn btn-small" data-id="${bl.id}" data-url="${escapeHtml(bl.sourceUrl)}">${t('backlinks.reverify')}</button>`);
+      actions.push(`<button class="btn-reverify btn btn-small" data-id="${bl.id}" data-url="${escapeHtml(bl.sourceUrl)}" title="${t('backlinks.tipReverify')}">${t('backlinks.reverify')}</button>`);
     }
     if (['publish_failed', 'error', 'captcha_blocked'].includes(bl.status)) {
-      actions.push(`<button class="btn-retry btn btn-small" data-id="${bl.id}">${t('backlinks.retry')}</button>`);
+      actions.push(`<button class="btn-retry btn btn-small" data-id="${bl.id}" title="${t('backlinks.tipRetry')}">${t('backlinks.retry')}</button>`);
     }
-    actions.push(`<button class="btn-delete-bl btn btn-small" data-id="${bl.id}" title="${t('backlinks.delete')}">x</button>`);
+    actions.push(`<button class="btn-delete-bl btn btn-small" data-id="${bl.id}" title="${t('backlinks.tipDelete')}">x</button>`);
 
     return `
     <div class="list-item${dimClass}" data-id="${bl.id}">
       <div class="list-item-header">
         <input type="checkbox" class="list-item-checkbox bl-checkbox" data-id="${bl.id}">
         <span class="list-item-title" title="${escapeHtml(bl.sourceTitle)}">${escapeHtml(bl.sourceTitle || bl.sourceDomain)}</span>
-        <span class="badge badge-${group}">${t('backlinks.grp' + group.charAt(0).toUpperCase() + group.slice(1))}</span>
-        <a class="list-item-link" href="${escapeHtml(bl.sourceUrl)}" target="_blank" title="${escapeHtml(bl.sourceUrl)}">&#x1F517;</a>
+        <span class="badge badge-${group}" title="${statusTooltip}">${t(groupKey)}</span>
+        <a class="list-item-link" href="${escapeHtml(bl.sourceUrl)}" target="_blank" title="${t('backlinks.tipOpenLink')}">&#x1F517;</a>
       </div>
       <div class="list-item-meta">
         <span title="${escapeHtml(bl.sourceUrl)}">${escapeHtml(bl.sourceDomain || '')}</span>
-        ${bl.ascore ? `<span>Score:${bl.ascore}</span>` : ''}
-        ${bl.ugc ? '<span class="badge badge-ugc">UGC</span>' : ''}
-        ${bl.nofollow ? '<span>nofollow</span>' : ''}
-        ${bl.firstSeen ? `<span>${bl.firstSeen.substring(0, 10)}</span>` : ''}
+        ${bl.ascore ? `<span title="${t('backlinks.tipScore')}">Score:${bl.ascore}</span>` : ''}
+        ${bl.ugc ? `<span class="badge badge-ugc" title="${t('backlinks.tipUgc')}">UGC</span>` : ''}
+        ${bl.nofollow ? `<span title="${t('backlinks.tipNofollow')}">nofollow</span>` : `<span title="${t('backlinks.tipDofollow')}">dofollow</span>`}
+        ${bl.firstSeen ? `<span title="${t('backlinks.tipFirstSeen')}">${bl.firstSeen.substring(0, 10)}</span>` : ''}
         ${actions.join('')}
       </div>
       ${extraInfo}

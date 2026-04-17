@@ -482,6 +482,9 @@ header .subtitle {
   margin-top: 3px;
 }
 
+.dofollow-yes { color: #059669; font-weight: 600; }
+.dofollow-no { color: #dc2626; font-weight: 600; }
+
 /* List Item - Checkbox */
 .list-item-checkbox {
   margin-right: 6px;

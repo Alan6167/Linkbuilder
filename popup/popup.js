@@ -1156,7 +1156,7 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
             commentStatus = verification.status;
             const statusKey = `publish.verify_${commentStatus}`;
             const logType = commentStatus === 'confirmed' ? 'success'
-              : (commentStatus === 'rejected' || commentStatus === 'captcha') ? 'error' : 'info';
+              : (commentStatus === 'rejected' || commentStatus === 'captcha' || commentStatus === 'requires_login') ? 'error' : 'info';
             addLog(logEntries, `${t(statusKey)}: ${verification.reason}`, logType);
 
             // Log dofollow result
@@ -1172,6 +1172,16 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
 
             if (commentStatus === 'confirmed') pubStats.confirmed++;
             else if (commentStatus === 'captcha') pubStats.captcha++;
+            else if (commentStatus === 'requires_login') {
+              pubStats.failed++;
+              addLog(logEntries, t('publish.requiresLogin'), 'error');
+              bl.status = 'not_commentable';
+              bl.errorMessage = 'Requires login/registration';
+              await updateRecord(STORES.BACKLINKS, bl);
+              if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
+              tabId = null;
+              break; // skip remaining sites for this page
+            }
             else if (commentStatus === 'rejected') pubStats.failed++;
             else pubStats.moderation++;
           } else {

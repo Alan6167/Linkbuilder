@@ -129,8 +129,8 @@ const messageHandlers = {
 
   // Verify if comment was published after submission
   async verifyComment({ tabId, commentText, website }) {
-    // Wait a moment for the form submission to trigger navigation
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Wait for the form submission to trigger navigation
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
     // Now wait for the page to finish loading (reload/redirect after submit)
     // Use a fresh check: listen for loading→complete transition

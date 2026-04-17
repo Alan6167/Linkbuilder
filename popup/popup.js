@@ -352,15 +352,20 @@ async function loadBacklinksList() {
       btn.textContent = '...';
       try {
         const { tabId } = await chrome.runtime.sendMessage({ type: 'analyzeUrl', url });
-        const verification = await chrome.runtime.sendMessage({ type: 'verifyComment', tabId, commentText: '', website: '' });
-        await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
         const allBl = await getAllRecords(STORES.BACKLINKS);
         const bl = allBl.find(b => b.id === blId);
         if (bl) {
+          const website = bl.commentedWith?.[0] ? '' : '';
+          const verification = await chrome.runtime.sendMessage({ type: 'verifyComment', tabId, commentText: '', website });
           bl.status = verification.status === 'confirmed' ? 'commented' : verification.status === 'rejected' ? 'publish_failed' : 'pending_moderation';
           bl.lastVerified = new Date().toISOString();
+          if (verification.dofollow !== undefined) {
+            bl.dofollowResult = verification.dofollow;
+            bl.postedRel = verification.postedRel;
+          }
           await updateRecord(STORES.BACKLINKS, bl);
         }
+        // Keep tab open so user can inspect the page
         await loadBacklinksList();
       } catch { btn.textContent = t('backlinks.reverify'); btn.disabled = false; }
     });

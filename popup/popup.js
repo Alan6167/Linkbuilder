@@ -766,11 +766,29 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
 
         addLog(logEntries, t('publish.comment', { text: commentText.substring(0, 80) }), 'info');
 
-        const formData = { name, email, website, comment: commentText };
-        const fieldSelectors = bl.commentFormAnalysis?.fields || {};
-        await chrome.runtime.sendMessage({ type: 'fillCommentForm', tabId, formData, fieldSelectors });
+        // Re-analyze the page for fresh field selectors (stored analysis may be outdated)
+        const freshAnalysis = await chrome.runtime.sendMessage({ type: 'analyzePageViaContentScript', tabId });
+        const fieldSelectors = (freshAnalysis && freshAnalysis.fields && Object.keys(freshAnalysis.fields).length > 0)
+          ? freshAnalysis.fields
+          : (bl.commentFormAnalysis?.fields || {});
 
-        addLog(logEntries, t('publish.filled'), 'success');
+        if (!fieldSelectors.comment) {
+          throw new Error(t('publish.noCommentField'));
+        }
+
+        const formData = { name, email, website, comment: commentText };
+        const fillResult = await chrome.runtime.sendMessage({ type: 'fillCommentForm', tabId, formData, fieldSelectors });
+
+        if (!fillResult.success) {
+          const details = Object.entries(fillResult.results || {})
+            .map(([k, v]) => `${k}:${v}`).join(', ');
+          throw new Error(t('publish.fillFailed', { details }));
+        }
+
+        addLog(logEntries, t('publish.filledDetail', {
+          filled: fillResult.filledCount,
+          total: fillResult.totalCount
+        }), 'success');
 
         let commentStatus = 'unknown';
 

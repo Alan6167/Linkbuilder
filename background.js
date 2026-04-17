@@ -323,29 +323,63 @@ function verifyCommentOnPage(commentText, website) {
 function fillForm(formData, fieldSelectors) {
   const results = {};
 
+  // React/Vue-compatible value setter
+  function setNativeValue(element, value) {
+    const proto = Object.getPrototypeOf(element);
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+    const parentSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+
+    if (setter && setter !== parentSetter && parentSetter) {
+      parentSetter.call(element, value);
+    } else {
+      element.value = value;
+    }
+  }
+
   for (const [field, value] of Object.entries(formData)) {
     const selector = fieldSelectors[field];
-    if (!selector) continue;
+    if (!selector) {
+      results[field] = 'no_selector';
+      continue;
+    }
 
     let element = null;
     if (selector.selector) {
-      element = document.querySelector(selector.selector);
+      try { element = document.querySelector(selector.selector); } catch {}
     }
     if (!element && selector.name) {
       element = document.querySelector(`[name="${selector.name}"]`);
     }
 
     if (element) {
-      element.value = value;
+      element.focus();
+      setNativeValue(element, value);
       element.dispatchEvent(new Event('input', { bubbles: true }));
       element.dispatchEvent(new Event('change', { bubbles: true }));
-      results[field] = true;
+      element.dispatchEvent(new Event('blur', { bubbles: true }));
+
+      // Verify value was actually set
+      if (element.value === value || element.value.length > 0) {
+        results[field] = 'filled';
+      } else {
+        results[field] = 'set_failed';
+      }
     } else {
-      results[field] = false;
+      results[field] = 'not_found';
     }
   }
 
-  return { success: true, results };
+  // Success only if the comment field was actually filled
+  const commentFilled = results.comment === 'filled';
+  const filledCount = Object.values(results).filter(v => v === 'filled').length;
+
+  return {
+    success: commentFilled,
+    results,
+    filledCount,
+    totalCount: Object.keys(formData).length
+  };
 }
 
 // Injected function: click submit button

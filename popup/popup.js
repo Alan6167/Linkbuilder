@@ -361,7 +361,7 @@ async function loadBacklinksList() {
           bl.lastVerified = new Date().toISOString();
           if (verification.dofollow !== undefined) {
             bl.dofollowResult = verification.dofollow;
-            bl.postedRel = verification.postedRel;
+            bl.bl._postedRel = verification.postedRel;
           }
           await updateRecord(STORES.BACKLINKS, bl);
         }
@@ -934,8 +934,8 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
 
     const bl = commentable[i];
     const siteStart = i === startPageIndex ? startSiteIndex : 0;
-    let dofollowVerified = undefined;
-    let postedRel = undefined;
+    bl._dofollowVerified = undefined;
+    bl._postedRel = undefined;
 
     for (let s = siteStart; s < selectedSites.length; s++) {
       if (!publishRunning) {
@@ -1162,12 +1162,12 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
             // Log dofollow result
             if (verification.dofollow === true) {
               addLog(logEntries, t('publish.dofollowSuccess', { rel: verification.postedRel }), 'success');
-              dofollowVerified = true;
-              postedRel = verification.postedRel;
+              bl._dofollowVerified = true;
+              bl._postedRel = verification.postedRel;
             } else if (verification.dofollow === false) {
               addLog(logEntries, t('publish.dofollowFail', { rel: verification.postedRel }), 'error');
-              dofollowVerified = false;
-              postedRel = verification.postedRel;
+              bl._dofollowVerified = false;
+              bl._postedRel = verification.postedRel;
             }
 
             if (commentStatus === 'confirmed') pubStats.confirmed++;
@@ -1196,7 +1196,7 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           name, email, website, mode,
           siteProfile: site.profileName,
           status: commentStatus,
-          dofollow: dofollowVerified,
+          dofollow: bl._dofollowVerified,
           postedRel,
           publishedAt: new Date().toISOString()
         }]);
@@ -1248,11 +1248,13 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
     bl.commentedAt = new Date().toISOString();
     bl.commentedWith = selectedSites.map(s => s.profileName);
     bl.verifyResults = results;
-    if (dofollowVerified !== undefined) {
-      bl.dofollowResult = dofollowVerified;
-      bl.postedRel = postedRel;
+    if (bl._dofollowVerified !== undefined) {
+      bl.dofollowResult = bl._dofollowVerified;
+      bl.postedRel = bl._postedRel;
     }
     delete bl._siteResults;
+    delete bl._dofollowVerified;
+    delete bl._postedRel;
     await updateRecord(STORES.BACKLINKS, bl);
 
     if (i < commentable.length - 1 && publishRunning) {

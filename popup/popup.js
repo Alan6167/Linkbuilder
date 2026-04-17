@@ -753,6 +753,28 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         const commentConfig = getCommentConfig(pageInfo.linkFormat);
         commentConfig.linkUrl = commentConfig.linkUrl || website;
 
+        // First: check if the page actually has a usable comment form BEFORE calling AI
+        const freshAnalysis = await chrome.runtime.sendMessage({ type: 'analyzePageViaContentScript', tabId });
+        const fieldSelectors = (freshAnalysis && freshAnalysis.fields && Object.keys(freshAnalysis.fields).length > 0)
+          ? freshAnalysis.fields
+          : (bl.commentFormAnalysis?.fields || {});
+        const frameId = freshAnalysis?.frameId;
+
+        if (!fieldSelectors.comment) {
+          addLog(logEntries, t('publish.noCommentField'), 'error');
+          if (!bl._siteResults) bl._siteResults = [];
+          bl._siteResults.push('no_form');
+          pubStats.failed++;
+          if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
+          tabId = null;
+          continue; // skip to next site, don't waste API call
+        }
+
+        if (frameId != null && frameId !== 0) {
+          addLog(logEntries, t('publish.formInFrame', { frameId }), 'info');
+        }
+
+        // Now we know the form is usable — call AI to generate comment
         addLog(logEntries, t('publish.generating'), 'info');
         const commentText = await generateComment(apiKey, {
           title: pageInfo.title,
@@ -765,21 +787,6 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         }, commentConfig);
 
         addLog(logEntries, t('publish.comment', { text: commentText.substring(0, 80) }), 'info');
-
-        // Re-analyze the page for fresh field selectors (searches all frames)
-        const freshAnalysis = await chrome.runtime.sendMessage({ type: 'analyzePageViaContentScript', tabId });
-        const fieldSelectors = (freshAnalysis && freshAnalysis.fields && Object.keys(freshAnalysis.fields).length > 0)
-          ? freshAnalysis.fields
-          : (bl.commentFormAnalysis?.fields || {});
-        const frameId = freshAnalysis?.frameId;
-
-        if (!fieldSelectors.comment) {
-          throw new Error(t('publish.noCommentField'));
-        }
-
-        if (frameId != null && frameId !== 0) {
-          addLog(logEntries, t('publish.formInFrame', { frameId }), 'info');
-        }
 
         const formData = { name, email, website, comment: commentText };
         const fillResult = await chrome.runtime.sendMessage({

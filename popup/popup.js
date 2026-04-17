@@ -1002,7 +1002,23 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           pubStats.failed++;
           if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
           tabId = null;
-          continue; // skip to next site, don't waste API call
+          continue;
+        }
+
+        // Check CAPTCHA BEFORE calling AI — don't waste API credits
+        const captchaInfo = freshAnalysis?.captcha || null;
+        if (captchaInfo && captchaInfo.type === 'unsolvable') {
+          addLog(logEntries, t('publish.captchaUnsolvable', { provider: captchaInfo.provider }), 'error');
+          bl.status = 'captcha_blocked';
+          bl.errorMessage = `Unsolvable CAPTCHA: ${captchaInfo.provider}`;
+          await updateRecord(STORES.BACKLINKS, bl);
+          pubStats.captcha++;
+          if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
+          tabId = null;
+          break; // skip ALL remaining sites for this page
+        }
+        if (captchaInfo && captchaInfo.type === 'math') {
+          addLog(logEntries, t('publish.captchaMath', { expr: captchaInfo.expression }), 'info');
         }
 
         if (frameId != null && frameId !== 0) {
@@ -1038,6 +1054,18 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           filled: fillResult.filledCount,
           total: fillResult.totalCount
         }), 'success');
+
+        // Solve math CAPTCHA if present
+        if (captchaInfo && captchaInfo.type === 'math') {
+          const captchaResult = await chrome.runtime.sendMessage({
+            type: 'solveCaptcha', tabId, captchaInfo, frameId
+          });
+          if (captchaResult.solved) {
+            addLog(logEntries, t('publish.captchaSolved', { expr: captchaResult.expression, answer: captchaResult.answer }), 'success');
+          } else {
+            addLog(logEntries, t('publish.captchaFailed', { reason: captchaResult.reason }), 'error');
+          }
+        }
 
         let commentStatus = 'unknown';
 

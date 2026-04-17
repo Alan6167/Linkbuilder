@@ -934,6 +934,8 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
 
     const bl = commentable[i];
     const siteStart = i === startPageIndex ? startSiteIndex : 0;
+    let dofollowVerified = undefined;
+    let postedRel = undefined;
 
     for (let s = siteStart; s < selectedSites.length; s++) {
       if (!publishRunning) {
@@ -1133,8 +1135,6 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         }
 
         let commentStatus = 'unknown';
-        let dofollowVerified = undefined; // true/false/undefined
-        let postedRel = undefined;
 
         if (mode === 'auto') {
           const submitResult = await chrome.runtime.sendMessage({

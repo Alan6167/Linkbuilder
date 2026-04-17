@@ -655,6 +655,56 @@ function verifyCommentOnPage(commentText, website) {
     return { verified: false, status: 'pending_moderation', reason: 'Form gone, likely submitted (may need moderation)' };
   }
 
+  // Detect login/registration requirement (appears after submit attempt)
+  const loginSignals = [
+    // Modals and forms
+    'form[action*="login"]', 'form[action*="signin"]', 'form[action*="register"]', 'form[action*="signup"]',
+    // Substack "Create your profile"
+    '[class*="profile-dialog"]', '[class*="create-profile"]',
+    // Generic login/register prompts
+    '.login-modal', '.signin-modal', '.register-modal', '.auth-modal',
+    '[role="dialog"] input[type="password"]',
+    '[role="dialog"] a[href*="login"]',
+    '[role="dialog"] a[href*="sign"]',
+  ];
+  const loginPatterns = [
+    /create your profile/i,
+    /sign in to comment/i,
+    /log in to (leave|post|write)/i,
+    /login to comment/i,
+    /must be logged in/i,
+    /please (sign|log) in/i,
+    /register to comment/i,
+    /create.*account/i,
+    /sign up to comment/i,
+    /登录.*评论/,
+    /请先登录/,
+  ];
+
+  for (const sel of loginSignals) {
+    const el = document.querySelector(sel);
+    if (el && el.offsetParent !== null) {
+      return { verified: false, status: 'requires_login', reason: 'Login/registration required to comment' };
+    }
+  }
+
+  // Check visible dialogs/overlays for login text
+  const dialogs = document.querySelectorAll('[role="dialog"], .modal, .overlay, [class*="modal"], [class*="dialog"], [class*="popup"]');
+  for (const dialog of dialogs) {
+    if (dialog.offsetParent === null && !dialog.classList.contains('active') && !dialog.hasAttribute('open')) continue;
+    const text = dialog.textContent || '';
+    for (const pattern of loginPatterns) {
+      if (pattern.test(text)) {
+        return { verified: false, status: 'requires_login', reason: 'Login/registration required: ' + text.trim().substring(0, 100) };
+      }
+    }
+  }
+
+  // Also check page URL for login redirect
+  if (currentUrl.includes('/login') || currentUrl.includes('/signin') || currentUrl.includes('/register') || currentUrl.includes('/signup')) {
+    return { verified: false, status: 'requires_login', reason: 'Redirected to login page' };
+  }
+
   // Form still exists - might mean nothing happened or page didn't reload
   return { verified: false, status: 'unknown', reason: 'Could not verify - form still present' };
 

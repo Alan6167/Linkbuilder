@@ -373,14 +373,21 @@ async function loadBacklinksList() {
   list.querySelectorAll('.btn-delete-bl').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      await deleteRecord(STORES.BACKLINKS, parseInt(btn.dataset.id));
+      const id = parseInt(btn.dataset.id);
+      selectedIds.delete(id);
+      await deleteRecord(STORES.BACKLINKS, id);
       await loadBacklinksList();
     });
   });
 
   // Checkbox change → update batch bar
   list.querySelectorAll('.bl-checkbox').forEach(cb => {
-    cb.addEventListener('change', updateBatchBar);
+    const id = parseInt(cb.dataset.id);
+    cb.checked = selectedIds.has(id);
+    cb.addEventListener('change', () => {
+      if (cb.checked) { selectedIds.add(id); } else { selectedIds.delete(id); }
+      updateBatchBar();
+    });
   });
 
   // Pagination
@@ -427,32 +434,45 @@ document.getElementById('btn-next').addEventListener('click', () => {
 });
 
 // Batch action bar
+const selectedIds = new Set();
+
 function updateBatchBar() {
-  const checked = document.querySelectorAll('.bl-checkbox:checked');
   const bar = document.getElementById('batch-bar');
-  if (checked.length > 0) {
+  const count = selectedIds.size;
+  if (count > 0) {
     bar.hidden = false;
-    document.getElementById('batch-count').textContent = t('backlinks.selectedCount', { count: checked.length });
+    document.getElementById('batch-count').textContent = t('backlinks.selectedCount', { count });
   } else {
     bar.hidden = true;
+    document.getElementById('bl-select-all').checked = false;
   }
 }
 
 document.getElementById('bl-select-all').addEventListener('change', (e) => {
-  document.querySelectorAll('.bl-checkbox').forEach(cb => { cb.checked = e.target.checked; });
+  const checkboxes = document.querySelectorAll('.bl-checkbox');
+  checkboxes.forEach(cb => {
+    cb.checked = e.target.checked;
+    const id = parseInt(cb.dataset.id);
+    if (e.target.checked) {
+      selectedIds.add(id);
+    } else {
+      selectedIds.delete(id);
+    }
+  });
   updateBatchBar();
 });
 
 document.getElementById('btn-batch-delete').addEventListener('click', async () => {
-  const ids = [...document.querySelectorAll('.bl-checkbox:checked')].map(cb => parseInt(cb.dataset.id));
+  const ids = [...selectedIds];
   if (ids.length === 0) return;
   if (!confirm(t('backlinks.deleteConfirm', { count: ids.length }))) return;
   for (const id of ids) { await deleteRecord(STORES.BACKLINKS, id); }
+  selectedIds.clear();
   await loadBacklinksList();
 });
 
 document.getElementById('btn-batch-retry').addEventListener('click', async () => {
-  const ids = [...document.querySelectorAll('.bl-checkbox:checked')].map(cb => parseInt(cb.dataset.id));
+  const ids = [...selectedIds];
   const allBl = await getAllRecords(STORES.BACKLINKS);
   for (const id of ids) {
     const bl = allBl.find(b => b.id === id);
@@ -462,6 +482,7 @@ document.getElementById('btn-batch-retry').addEventListener('click', async () =>
       await updateRecord(STORES.BACKLINKS, bl);
     }
   }
+  selectedIds.clear();
   await loadBacklinksList();
 });
 

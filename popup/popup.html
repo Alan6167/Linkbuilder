@@ -89,19 +89,19 @@
       <div class="section">
         <!-- Status overview bar -->
         <div class="status-bar" id="status-bar">
-          <button class="status-chip active" data-filter="all">
+          <button class="status-chip active" data-filter="all" data-i18n-title="backlinks.tip_all">
             <span data-i18n="backlinks.all">全部</span> <span class="chip-count" id="count-all">0</span>
           </button>
-          <button class="status-chip" data-filter="pending">
+          <button class="status-chip" data-filter="pending" data-i18n-title="backlinks.tip_pending">
             <span data-i18n="backlinks.grpPending">待处理</span> <span class="chip-count" id="count-pending">0</span>
           </button>
-          <button class="status-chip" data-filter="commentable">
+          <button class="status-chip" data-filter="commentable" data-i18n-title="backlinks.tip_commentable">
             <span data-i18n="backlinks.grpCommentable">可评论</span> <span class="chip-count" id="count-commentable">0</span>
           </button>
-          <button class="status-chip" data-filter="published">
+          <button class="status-chip" data-filter="published" data-i18n-title="backlinks.tip_published">
             <span data-i18n="backlinks.grpPublished">已发布</span> <span class="chip-count" id="count-published">0</span>
           </button>
-          <button class="status-chip" data-filter="failed">
+          <button class="status-chip" data-filter="failed" data-i18n-title="backlinks.tip_failed">
             <span data-i18n="backlinks.grpFailed">失败</span> <span class="chip-count" id="count-failed">0</span>
           </button>
         </div>
@@ -109,13 +109,13 @@
         <!-- Search + Sort + Analyze -->
         <div class="search-row">
           <input type="text" id="bl-search" data-i18n-placeholder="backlinks.searchPlaceholder" placeholder="搜索域名或标题...">
-          <select id="bl-sort">
+          <select id="bl-sort" data-i18n-title="backlinks.tipSort">
             <option value="ascore_desc" data-i18n="backlinks.sortScore">评分↓</option>
             <option value="ascore_asc" data-i18n="backlinks.sortScoreAsc">评分↑</option>
             <option value="date_desc" data-i18n="backlinks.sortDateDesc">最新</option>
             <option value="domain" data-i18n="backlinks.sortDomain">域名</option>
           </select>
-          <button id="btn-analyze-all" class="btn btn-small" data-i18n="backlinks.analyzeAll">分析</button>
+          <button id="btn-analyze-all" class="btn btn-small" data-i18n="backlinks.analyzeAll" data-i18n-title="backlinks.tipAnalyze">分析</button>
           <button id="btn-stop-analyze" class="btn btn-small btn-danger" hidden data-i18n="backlinks.stop">停止</button>
         </div>
 

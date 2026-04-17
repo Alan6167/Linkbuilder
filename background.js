@@ -159,10 +159,8 @@ function waitForTabLoad(tabId, timeoutMs = 15000) {
   });
 }
 
-// Inline page analysis function (fallback when content script isn't available)
+// Inline page analysis function — detects comment forms across various blog platforms
 function analyzePageInline() {
-  const forms = document.querySelectorAll('form');
-  let commentForm = null;
   let formInfo = {
     hasCommentForm: false,
     requiresLogin: false,
@@ -170,83 +168,147 @@ function analyzePageInline() {
     submitButton: null
   };
 
-  for (const form of forms) {
-    const formId = (form.id || '').toLowerCase();
-    const formClass = (form.className || '').toLowerCase();
-    const formAction = (form.action || '').toLowerCase();
+  function getSelector(el) {
+    if (el.id) return `#${el.id}`;
+    if (el.name) return `[name="${el.name}"]`;
+    // Build a reliable path selector
+    const tag = el.tagName.toLowerCase();
+    if (el.className && typeof el.className === 'string') {
+      const cls = el.className.trim().split(/\s+/).slice(0, 2).join('.');
+      if (cls) return `${tag}.${cls}`;
+    }
+    return tag;
+  }
 
-    const isCommentForm =
-      formId.includes('comment') ||
-      formClass.includes('comment') ||
-      formAction.includes('comment') ||
-      form.querySelector('textarea[name*="comment"]') ||
-      form.querySelector('textarea[id*="comment"]') ||
-      form.querySelector('#comment');
+  // Strategy 1: Traditional <form> with comment indicators
+  let commentForm = null;
+  for (const form of document.querySelectorAll('form')) {
+    const id = (form.id || '').toLowerCase();
+    const cls = (form.className || '').toLowerCase();
+    const action = (form.action || '').toLowerCase();
 
-    if (isCommentForm) {
+    if (id.includes('comment') || cls.includes('comment') || action.includes('comment') ||
+        form.querySelector('textarea[name*="comment" i]') ||
+        form.querySelector('textarea[id*="comment" i]') ||
+        form.querySelector('#comment')) {
       commentForm = form;
       break;
     }
   }
 
+  // Strategy 2: Any form with a textarea
   if (!commentForm) {
-    const textareas = document.querySelectorAll('textarea');
-    for (const ta of textareas) {
+    for (const ta of document.querySelectorAll('textarea')) {
       const parent = ta.closest('form');
-      if (parent) {
-        commentForm = parent;
-        break;
-      }
+      if (parent) { commentForm = parent; break; }
     }
   }
 
-  if (!commentForm) {
-    const loginIndicators = document.querySelectorAll(
-      'a[href*="login"], a[href*="register"], a[href*="sign-in"], .login-required, .must-log-in'
-    );
-    if (loginIndicators.length > 0) {
-      formInfo.requiresLogin = true;
+  // If we found a traditional form, extract fields
+  if (commentForm) {
+    formInfo.hasCommentForm = true;
+
+    function findInput(container, patterns) {
+      for (const p of patterns) {
+        let el = container.querySelector(`input[name*="${p}" i]`)
+          || container.querySelector(`input[id*="${p}" i]`)
+          || container.querySelector(`input[placeholder*="${p}" i]`);
+        if (el) return { selector: getSelector(el), name: el.name || el.id, type: el.type };
+      }
+      return null;
     }
+
+    formInfo.fields = {
+      name: findInput(commentForm, ['author', 'name', 'commenter', 'your-name', 'nickname']),
+      email: findInput(commentForm, ['email', 'mail', 'e-mail']),
+      website: findInput(commentForm, ['url', 'website', 'web', 'site', 'homepage']),
+      comment: (() => {
+        const ta = commentForm.querySelector('textarea');
+        return ta ? { selector: getSelector(ta), name: ta.name || ta.id, type: 'textarea' } : null;
+      })()
+    };
+
+    const submitBtn = commentForm.querySelector('input[type="submit"], button[type="submit"], button.submit, #submit');
+    if (submitBtn) {
+      formInfo.submitButton = { selector: getSelector(submitBtn), text: submitBtn.value || submitBtn.textContent?.trim() };
+    }
+
     return formInfo;
   }
 
-  formInfo.hasCommentForm = true;
+  // Strategy 3: Standalone textarea (not inside a form — some themes do this)
+  const standaloneTextarea = document.querySelector(
+    'textarea[name*="comment" i], textarea[id*="comment" i], textarea[placeholder*="comment" i], textarea[placeholder*="write" i]'
+  );
+  if (standaloneTextarea) {
+    formInfo.hasCommentForm = true;
+    formInfo.fields.comment = { selector: getSelector(standaloneTextarea), name: standaloneTextarea.name || standaloneTextarea.id, type: 'textarea' };
 
-  function getSelector(el) {
-    if (el.id) return `#${el.id}`;
-    if (el.name) return `[name="${el.name}"]`;
-    return null;
+    // Look for nearby inputs and submit button in surrounding container
+    const container = standaloneTextarea.closest('div, section, article') || document.body;
+    formInfo.fields.name = findNearbyInput(container, ['author', 'name', 'commenter']);
+    formInfo.fields.email = findNearbyInput(container, ['email', 'mail']);
+    formInfo.fields.website = findNearbyInput(container, ['url', 'website', 'site']);
+    formInfo.submitButton = findNearbySubmit(container);
+
+    return formInfo;
   }
 
-  function findInput(patterns) {
+  // Strategy 4: contenteditable div (WordPress.com, Jetpack, Squarespace, Medium-style)
+  const editableDivs = document.querySelectorAll(
+    '[contenteditable="true"], [role="textbox"], .ProseMirror, .ql-editor, .comment-form__field textarea, [data-placeholder*="comment" i], [data-placeholder*="write" i], [placeholder*="comment" i], [placeholder*="write" i]'
+  );
+
+  for (const el of editableDivs) {
+    // Check if this looks like a comment input (not a search bar or unrelated editor)
+    const nearComment = el.closest('[class*="comment" i], [id*="comment" i], [class*="reply" i], [id*="reply" i]')
+      || (document.querySelector('h3, h2, h4')?.textContent?.match(/leave.*reply|comment|respond/i));
+
+    if (nearComment || editableDivs.length === 1) {
+      formInfo.hasCommentForm = true;
+      formInfo.fields.comment = {
+        selector: getSelector(el),
+        name: el.getAttribute('name') || el.id || null,
+        type: el.tagName === 'TEXTAREA' ? 'textarea' : 'contenteditable'
+      };
+
+      // Find nearby inputs
+      const container = el.closest('form, div, section') || el.parentElement;
+      formInfo.fields.name = findNearbyInput(container, ['author', 'name', 'commenter', 'nickname']);
+      formInfo.fields.email = findNearbyInput(container, ['email', 'mail']);
+      formInfo.fields.website = findNearbyInput(container, ['url', 'website', 'site']);
+      formInfo.submitButton = findNearbySubmit(container);
+
+      return formInfo;
+    }
+  }
+
+  // No form found — check for login requirement
+  if (document.querySelector('a[href*="login"], a[href*="register"], .login-required, .must-log-in')) {
+    formInfo.requiresLogin = true;
+  }
+
+  return formInfo;
+
+  // Helpers
+  function findNearbyInput(container, patterns) {
     for (const p of patterns) {
-      let el = commentForm.querySelector(`input[name*="${p}" i]`)
-        || commentForm.querySelector(`input[id*="${p}" i]`)
-        || commentForm.querySelector(`input[placeholder*="${p}" i]`);
+      let el = container.querySelector(`input[name*="${p}" i]`)
+        || container.querySelector(`input[id*="${p}" i]`)
+        || container.querySelector(`input[placeholder*="${p}" i]`);
       if (el) return { selector: getSelector(el), name: el.name || el.id, type: el.type };
     }
     return null;
   }
 
-  formInfo.fields = {
-    name: findInput(['author', 'name', 'commenter', 'your-name']),
-    email: findInput(['email', 'mail', 'e-mail']),
-    website: findInput(['url', 'website', 'web', 'site', 'homepage']),
-    comment: (() => {
-      const ta = commentForm.querySelector('textarea');
-      return ta ? { selector: getSelector(ta), name: ta.name || ta.id } : null;
-    })()
-  };
-
-  const submitBtn = commentForm.querySelector('input[type="submit"], button[type="submit"], button.submit, #submit');
-  if (submitBtn) {
-    formInfo.submitButton = {
-      selector: getSelector(submitBtn),
-      text: submitBtn.value || submitBtn.textContent
-    };
+  function findNearbySubmit(container) {
+    const btn = container.querySelector('input[type="submit"], button[type="submit"]')
+      || container.querySelector('button.submit, #submit')
+      || [...container.querySelectorAll('button')].find(b =>
+        /^(comment|submit|post|reply|send)/i.test(b.textContent?.trim()));
+    if (btn) return { selector: getSelector(btn), text: btn.value || btn.textContent?.trim() };
+    return null;
   }
-
-  return formInfo;
 }
 
 // Injected function: verify comment appeared on page after submission
@@ -404,15 +466,38 @@ async function fillForm(formData, fieldSelectors) {
 
     if (element) {
       element.focus();
-      setNativeValue(element, value);
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-      element.dispatchEvent(new Event('change', { bubbles: true }));
-      element.dispatchEvent(new Event('blur', { bubbles: true }));
 
-      if (element.value === value || element.value.length > 0) {
-        results[field] = 'filled';
+      const isContentEditable = element.isContentEditable || element.getAttribute('contenteditable') === 'true';
+
+      if (isContentEditable) {
+        // For contenteditable divs (WordPress.com, Jetpack, Squarespace, etc.)
+        element.textContent = '';
+        element.focus();
+        // Use execCommand for rich text editors that listen for it
+        document.execCommand('insertText', false, value);
+        // Also set directly as fallback
+        if (!element.textContent) {
+          element.textContent = value;
+        }
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+
+        if (element.textContent.length > 0) {
+          results[field] = 'filled';
+        } else {
+          results[field] = 'set_failed';
+        }
       } else {
-        results[field] = 'set_failed';
+        // For regular input/textarea
+        setNativeValue(element, value);
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+        element.dispatchEvent(new Event('blur', { bubbles: true }));
+
+        if (element.value === value || element.value.length > 0) {
+          results[field] = 'filled';
+        } else {
+          results[field] = 'set_failed';
+        }
       }
     } else {
       results[field] = 'not_found';

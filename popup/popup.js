@@ -266,6 +266,7 @@ async function loadBacklinksList() {
   const search = document.getElementById('bl-search').value.trim().toLowerCase();
   if (search) {
     backlinks = backlinks.filter(b =>
+      (b.sourceUrl || '').toLowerCase().includes(search) ||
       (b.sourceDomain || '').toLowerCase().includes(search) ||
       (b.sourceTitle || '').toLowerCase().includes(search)
     );

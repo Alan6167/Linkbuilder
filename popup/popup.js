@@ -267,8 +267,7 @@ async function loadBacklinksList() {
   if (search) {
     backlinks = backlinks.filter(b =>
       (b.sourceUrl || '').toLowerCase().includes(search) ||
-      (b.sourceDomain || '').toLowerCase().includes(search) ||
-      (b.sourceTitle || '').toLowerCase().includes(search)
+      (b.sourceDomain || '').toLowerCase().includes(search)
     );
   }
 

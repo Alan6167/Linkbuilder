@@ -361,7 +361,7 @@ async function loadBacklinksList() {
           bl.lastVerified = new Date().toISOString();
           if (verification.dofollow !== undefined) {
             bl.dofollowResult = verification.dofollow;
-            bl.bl._postedRel = verification.postedRel;
+            bl.postedRel = verification.postedRel;
           }
           await updateRecord(STORES.BACKLINKS, bl);
         }
@@ -1007,12 +1007,13 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
 
         if (!fieldSelectors.comment) {
           addLog(logEntries, t('publish.noCommentField'), 'error');
-          if (!bl._siteResults) bl._siteResults = [];
-          bl._siteResults.push('no_form');
+          bl.status = 'not_commentable';
+          bl.errorMessage = 'No comment textarea found on page';
+          await updateRecord(STORES.BACKLINKS, bl);
           pubStats.failed++;
           if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
           tabId = null;
-          continue;
+          break; // skip ALL remaining sites for this page
         }
 
         // Check CAPTCHA BEFORE calling AI — don't waste API credits
@@ -1207,7 +1208,7 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           siteProfile: site.profileName,
           status: commentStatus,
           dofollow: bl._dofollowVerified,
-          postedRel,
+          postedRel: bl._postedRel,
           publishedAt: new Date().toISOString()
         }]);
 

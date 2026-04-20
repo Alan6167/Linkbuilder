@@ -937,6 +937,46 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
     bl._dofollowVerified = undefined;
     bl._postedRel = undefined;
 
+    // Page-level pre-check: open once, analyze, close — skip page if unusable
+    let pageAnalysis = null;
+    try {
+      const preResult = await chrome.runtime.sendMessage({ type: 'analyzeUrl', url: bl.sourceUrl });
+      const preTabId = preResult.tabId;
+      pageAnalysis = await chrome.runtime.sendMessage({ type: 'analyzePageViaContentScript', tabId: preTabId });
+      await chrome.runtime.sendMessage({ type: 'closeTab', tabId: preTabId });
+    } catch (err) {
+      addLog(logEntries, t('common.error', { message: err.message }), 'error');
+    }
+
+    if (pageAnalysis) {
+      const fields = pageAnalysis.fields || {};
+      if (!fields.comment) {
+        addLog(logEntries, `${bl.sourceDomain}: ${t('publish.noCommentField')}`, 'error');
+        bl.status = 'not_commentable';
+        bl.errorMessage = 'No comment textarea found on page';
+        await updateRecord(STORES.BACKLINKS, bl);
+        pubStats.failed++;
+        continue;
+      }
+      const cap = pageAnalysis.captcha;
+      if (cap && (cap.type === 'unsolvable' || cap.type === 'image')) {
+        addLog(logEntries, `${bl.sourceDomain}: ${t('publish.captchaUnsolvable', { provider: cap.provider || cap.type })}`, 'error');
+        bl.status = 'captcha_blocked';
+        bl.errorMessage = `CAPTCHA: ${cap.provider || cap.type}`;
+        await updateRecord(STORES.BACKLINKS, bl);
+        pubStats.captcha++;
+        continue;
+      }
+      if (pageAnalysis.blockers?.includes('cleantalk') || pageAnalysis.blockers?.includes('jetpack_iframe')) {
+        addLog(logEntries, `${bl.sourceDomain}: ${t('publish.blockerDetected', { blocker: pageAnalysis.blockers.join(', ') })}`, 'error');
+        bl.status = 'captcha_blocked';
+        bl.errorMessage = `Blocker: ${pageAnalysis.blockers.join(', ')}`;
+        await updateRecord(STORES.BACKLINKS, bl);
+        pubStats.captcha++;
+        continue;
+      }
+    }
+
     for (let s = siteStart; s < selectedSites.length; s++) {
       if (!publishRunning) {
         await saveTaskState({
@@ -998,46 +1038,14 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         const commentConfig = getCommentConfig(pageInfo.linkFormat);
         commentConfig.linkUrl = commentConfig.linkUrl || website;
 
-        // First: check if the page actually has a usable comment form BEFORE calling AI
-        const freshAnalysis = await chrome.runtime.sendMessage({ type: 'analyzePageViaContentScript', tabId });
+        // Use pre-check analysis for field selectors and frame info
+        const freshAnalysis = pageAnalysis;
         const fieldSelectors = (freshAnalysis && freshAnalysis.fields && Object.keys(freshAnalysis.fields).length > 0)
           ? freshAnalysis.fields
           : (bl.commentFormAnalysis?.fields || {});
         const frameId = freshAnalysis?.frameId;
-
-        if (!fieldSelectors.comment) {
-          addLog(logEntries, t('publish.noCommentField'), 'error');
-          bl.status = 'not_commentable';
-          bl.errorMessage = 'No comment textarea found on page';
-          await updateRecord(STORES.BACKLINKS, bl);
-          pubStats.failed++;
-          if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
-          tabId = null;
-          break; // skip ALL remaining sites for this page
-        }
-
-        // Check CAPTCHA BEFORE calling AI — don't waste API credits
         const captchaInfo = freshAnalysis?.captcha || null;
-        if (captchaInfo && captchaInfo.type === 'unsolvable') {
-          addLog(logEntries, t('publish.captchaUnsolvable', { provider: captchaInfo.provider }), 'error');
-          bl.status = 'captcha_blocked';
-          bl.errorMessage = `Unsolvable CAPTCHA: ${captchaInfo.provider}`;
-          await updateRecord(STORES.BACKLINKS, bl);
-          pubStats.captcha++;
-          if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
-          tabId = null;
-          break; // skip ALL remaining sites for this page
-        }
-        if (captchaInfo && captchaInfo.type === 'image') {
-          addLog(logEntries, t('publish.captchaImage'), 'error');
-          bl.status = 'captcha_blocked';
-          bl.errorMessage = 'Image CAPTCHA (visual recognition required)';
-          await updateRecord(STORES.BACKLINKS, bl);
-          pubStats.captcha++;
-          if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
-          tabId = null;
-          break; // skip ALL remaining sites for this page
-        }
+
         if (captchaInfo && (captchaInfo.type === 'math' || captchaInfo.type === 'text')) {
           const desc = captchaInfo.type === 'math'
             ? t('publish.captchaMath', { expr: captchaInfo.expression })
@@ -1049,24 +1057,9 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           addLog(logEntries, t('publish.formInFrame', { frameId }), 'info');
         }
 
-        // Check blockers BEFORE calling AI
+        // Dofollow bypass checks
         const dofollowBypass = document.getElementById('pub-dofollow-bypass').checked;
         let bypassActive = false;
-
-        if (freshAnalysis?.blockers?.length > 0) {
-          for (const blocker of freshAnalysis.blockers) {
-            addLog(logEntries, t('publish.blockerDetected', { blocker }), 'error');
-          }
-          if (freshAnalysis.blockers.includes('cleantalk') || freshAnalysis.blockers.includes('jetpack_iframe')) {
-            bl.status = 'captcha_blocked';
-            bl.errorMessage = `Blocker: ${freshAnalysis.blockers.join(', ')}`;
-            await updateRecord(STORES.BACKLINKS, bl);
-            pubStats.captcha++;
-            if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
-            tabId = null;
-            break;
-          }
-        }
 
         if (dofollowBypass) {
           if (!freshAnalysis?.isWordPress) {
@@ -1229,8 +1222,17 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           siteProfile: site.profileName,
           failureType: classifyFailure(err.message),
           errorMessage: err.message,
+          errorStack: err.stack?.split('\n').slice(0, 5).join('\n'),
           stage: 'publish',
-          formAnalysis: bl.commentFormAnalysis || null,
+          formAnalysis: freshAnalysis || bl.commentFormAnalysis || null,
+          pageAnalysis: pageAnalysis ? {
+            isWordPress: pageAnalysis.isWordPress,
+            wpKsesAllowsLinks: pageAnalysis.wpKsesAllowsLinks,
+            commentLinkRels: pageAnalysis.commentLinkRels,
+            blockers: pageAnalysis.blockers,
+            honeypotFields: pageAnalysis.honeypotFields?.length || 0,
+            captcha: pageAnalysis.captcha
+          } : null,
           loggedAt: new Date().toISOString()
         }]);
 

@@ -815,3 +815,12 @@ hr {
   background: #ccc;
   border-radius: 2px;
 }
+
+/* Per-site publish status badges (C12) */
+.site-badge              { display: inline-block; padding: 0 6px; margin-right: 4px; border-radius: 3px; font-size: 11px; line-height: 16px; }
+.site-badge.site-ok      { background: #e6f7e6; color: #1a7f1a; }
+.site-badge.site-pending { background: #fff3cd; color: #7a5c00; }
+.site-badge.site-retry   { background: #eef1f5; color: #333; }
+.site-badge.site-fail    { background: #fde2e2; color: #a11; }
+.site-badge.site-orphan  { opacity: 0.6; border: 1px dashed #bbb; }
+.publish-progress        { font-weight: 600; margin-right: 6px; }

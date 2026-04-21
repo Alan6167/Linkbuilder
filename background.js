@@ -145,6 +145,24 @@ const messageHandlers = {
       args: [commentText, website]
     });
     return results[0]?.result || { verified: false, reason: 'script_failed' };
+  },
+
+  // Fast local check: scan current DOM (all frames) for an existing link to `website`
+  // No navigation wait; returns in <100ms. Used as a cheap preCheck before publishing.
+  async quickCheckExistingComment({ tabId, website, matchMode }) {
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        func: quickCheckInPage,
+        args: [website, matchMode || 'url']
+      });
+      for (const r of results || []) {
+        if (r?.result?.found) return r.result;
+      }
+      return { found: false };
+    } catch (err) {
+      return { found: false, error: err.message };
+    }
   }
 };
 
@@ -593,6 +611,45 @@ function analyzePageInline() {
 }
 
 // Injected function: verify comment appeared on page after submission
+// Injected into every frame to find an existing link to `website` in the comment area.
+// Returns { found, matched, via } as soon as any frame finds a match.
+// matchMode: 'url' (default, strict host+path) or 'domain' (host-only fallback).
+function quickCheckInPage(website, matchMode) {
+  const normalize = (raw, base) => {
+    try {
+      const u = base ? new URL(raw, base) : new URL(raw);
+      const host = u.host.replace(/^www\./, '').toLowerCase();
+      const path = u.pathname.replace(/\/+$/, '') || '/';
+      return { full: `${host}${path}`, host };
+    } catch {
+      return { full: (raw || '').toLowerCase(), host: (raw || '').toLowerCase() };
+    }
+  };
+  const target = normalize(website);
+  if (!target.full) return { found: false };
+
+  const containers = document.querySelectorAll(
+    '.comment, .comments, .comment-list, #comments, article .comments, .wp-block-comments, ol.commentlist, ul.commentlist'
+  );
+  const scope = containers.length ? [...containers] : [document.body];
+
+  for (const root of scope) {
+    const links = root.querySelectorAll('a[href]');
+    for (const a of links) {
+      const href = (a.getAttribute('href') || '').trim();
+      if (!href) continue;
+      const n = normalize(href, location.href);
+      if (n.full === target.full || n.full.startsWith(target.full + '/')) {
+        return { found: true, matched: href, via: 'url' };
+      }
+      if (matchMode === 'domain' && n.host === target.host) {
+        return { found: true, matched: href, via: 'domain' };
+      }
+    }
+  }
+  return { found: false };
+}
+
 function verifyCommentOnPage(commentText, website) {
   const pageText = document.body?.innerText || '';
   const pageHtml = document.body?.innerHTML || '';

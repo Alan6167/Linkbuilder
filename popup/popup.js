@@ -1,4 +1,4 @@
-import { STORES, addRecords, getAllRecords, updateRecord, deleteRecord, clearStore, getRecordCount, getSetting, setSetting } from '../lib/db.js';
+import { STORES, addRecords, getAllRecords, updateRecord, deleteRecord, deleteCommentsByBacklinkId, clearStore, getRecordCount, getSetting, setSetting } from '../lib/db.js';
 import { parseRow, filterBacklinks, getFilterStats, DEFAULT_FILTER_CONFIG } from '../lib/filter.js';
 import { generateComment, setRateLimitCallback, formatLink, setProvider, getProvider } from '../lib/gemini.js';
 import { t, setLanguage, getLanguage } from '../lib/i18n.js';
@@ -222,6 +222,128 @@ document.getElementById('btn-add-urls').addEventListener('click', async () => {
   input.value = '';
 });
 
+// ========== Publish state helpers（C1/D2/D5）==========
+
+const MAX_FAIL_RETRIES = 2;
+const HARD_SUCCESS = new Set(['confirmed', 'already_exists']);
+const SOFT_SUCCESS = new Set(['pending_moderation']);
+const RETRY_ELIGIBLE = new Set(['submit_failed', 'rejected', 'error']);
+const PAGE_BLOCKER_STATUSES = new Set([
+  'pending', 'analyzing', 'not_commentable', 'requires_login', 'captcha_blocked', 'error'
+]);
+
+function siteKeyFromWebsite(raw) {
+  try {
+    const u = new URL(raw);
+    const host = u.host.replace(/^www\./, '').toLowerCase();
+    const path = u.pathname.replace(/\/+$/, '') || '/';
+    return `${host}${path}`;
+  } catch {
+    return (raw || '').toLowerCase();
+  }
+}
+
+function siteKeyOf(site) {
+  const raw = site?.website || '';
+  const fromUrl = siteKeyFromWebsite(raw);
+  if (fromUrl && fromUrl !== (raw || '').toLowerCase()) return fromUrl;
+  // URL 解析失败的兜底
+  return (site?.profileName || raw || '').toLowerCase();
+}
+
+// 返回 Map<backlinkId, Map<siteKey, SiteHist>>
+// SiteHist = { hardSuccess, softSuccess, failCount, pendingUserAction, lastStatus, lastAt, lastProfileName }
+async function buildPublishHistory() {
+  const comments = await getAllRecords(STORES.COMMENTS);
+  const byBl = new Map();
+  for (const c of comments) {
+    if (!c.backlinkId) continue;
+    const key = c.siteKey || siteKeyFromWebsite(c.website) || (c.siteProfile || '').toLowerCase();
+    if (!key) continue;
+    let bySite = byBl.get(c.backlinkId);
+    if (!bySite) { bySite = new Map(); byBl.set(c.backlinkId, bySite); }
+    const h = bySite.get(key) || {
+      hardSuccess: null, softSuccess: null, failCount: 0,
+      pendingUserAction: false, lastStatus: null, lastAt: null,
+      lastProfileName: c.siteProfile || null
+    };
+    if (c.status === 'confirmed' || c.status === 'already_exists') {
+      const rank = s => s === 'confirmed' ? 2 : s === 'already_exists' ? 1 : 0;
+      if (rank(c.status) > rank(h.hardSuccess)) h.hardSuccess = c.status;
+    } else if (c.status === 'pending_moderation') {
+      h.softSuccess = 'pending_moderation';
+    } else if (c.status === 'pending_review') {
+      h.pendingUserAction = true;
+    } else if (c.status === 'submit_failed' || c.status === 'rejected' || c.status === 'error') {
+      h.failCount++;
+    }
+    if (!h.lastAt || (c.publishedAt || '') > h.lastAt) {
+      h.lastAt = c.publishedAt || h.lastAt;
+      h.lastStatus = c.status;
+      if (c.siteProfile) h.lastProfileName = c.siteProfile;
+    }
+    bySite.set(key, h);
+  }
+  return byBl;
+}
+
+function shouldPublish(hForBl, siteKey) {
+  const h = hForBl?.get(siteKey);
+  if (!h) return true;
+  if (h.hardSuccess || h.softSuccess) return false;
+  if (h.pendingUserAction) return false;
+  if (h.failCount >= MAX_FAIL_RETRIES) return false;
+  return true;
+}
+
+// C10 shared: recompute bl.status from COMMENTS history + current site profiles.
+// Does NOT touch page-blocker statuses (requires_login / captcha_blocked / not_commentable / error).
+async function aggregateBacklinkStatus(backlinkId) {
+  const allBl = await getAllRecords(STORES.BACKLINKS);
+  const bl = allBl.find(b => b.id === backlinkId);
+  if (!bl) return null;
+  const PAGE_BLOCKERS_AGG = ['requires_login', 'captcha_blocked', 'not_commentable', 'error'];
+  if (PAGE_BLOCKERS_AGG.includes(bl.status)) return bl;
+
+  const hist = await buildPublishHistory();
+  const hForBl = hist.get(backlinkId) || new Map();
+  const currentProfiles = await getSiteProfiles();
+  const targetKeys = [...new Set(currentProfiles.map(siteKeyOf).filter(Boolean))];
+
+  let hardSuccessCount = 0, softSuccessCount = 0, pendingCount = 0, failOnlyCount = 0;
+  for (const key of targetKeys) {
+    const h = hForBl.get(key);
+    if (!h) continue;
+    if (h.hardSuccess) hardSuccessCount++;
+    else if (h.softSuccess) softSuccessCount++;
+    else if (h.pendingUserAction) pendingCount++;
+    else if (h.failCount > 0) failOnlyCount++;
+  }
+  const anySuccessCount = hardSuccessCount + softSuccessCount;
+
+  if (targetKeys.length > 0 && hardSuccessCount === targetKeys.length) {
+    bl.status = 'commented';
+  } else if (targetKeys.length > 0 && anySuccessCount === targetKeys.length) {
+    bl.status = 'pending_moderation';
+  } else if (anySuccessCount > 0) {
+    bl.status = 'partial_published';
+  } else if (pendingCount > 0) {
+    bl.status = 'pending_moderation';
+  } else if (failOnlyCount > 0) {
+    bl.status = 'publish_failed';
+  } else {
+    bl.status = bl.status || 'commentable';
+  }
+
+  const profileByKey = new Map(currentProfiles.map(p => [siteKeyOf(p), p.profileName]));
+  bl.commentedWith = [...hForBl.entries()]
+    .filter(([, h]) => h.hardSuccess || h.softSuccess)
+    .map(([k, h]) => profileByKey.get(k) || h.lastProfileName || k);
+  bl.commentedAt = bl.commentedAt || new Date().toISOString();
+  await updateRecord(STORES.BACKLINKS, bl);
+  return bl;
+}
+
 // ========== Backlinks Tab ==========
 let currentFilter = 'all';
 
@@ -229,8 +351,8 @@ let currentFilter = 'all';
 const STATUS_GROUPS = {
   pending: ['pending', 'analyzing'],
   commentable: ['commentable'],
-  published: ['commented', 'pending_moderation', 'pending_review'],
-  failed: ['publish_failed', 'captcha_blocked', 'error', 'not_commentable']
+  published: ['commented', 'pending_moderation', 'pending_review', 'partial_published'],
+  failed: ['publish_failed', 'captcha_blocked', 'requires_login', 'error', 'not_commentable']
 };
 
 function getStatusGroup(status) {
@@ -243,6 +365,12 @@ function getStatusGroup(status) {
 async function loadBacklinksList() {
   let allBacklinks = await getAllRecords(STORES.BACKLINKS);
   const list = document.getElementById('backlinks-list');
+
+  // C12: prefetch publish history + profile lookup for per-site badges
+  const history = await buildPublishHistory();
+  const currentProfiles = await getSiteProfiles();
+  const profileByKey = new Map(currentProfiles.map(p => [siteKeyOf(p), p.profileName]));
+  const currentKeySet = new Set(currentProfiles.map(siteKeyOf).filter(Boolean));
 
   // Update status bar counts
   const counts = { all: allBacklinks.length, pending: 0, commentable: 0, published: 0, failed: 0 };
@@ -299,25 +427,60 @@ async function loadBacklinksList() {
     const dimClass = bl.status === 'not_commentable' ? ' list-item-dim' : '';
 
     let extraInfo = '';
-    if (bl.errorMessage && ['publish_failed', 'error', 'captcha_blocked'].includes(bl.status)) {
+    // Codex 补丁：dfTag 始终初始化在分支之外
+    let dfTag = '';
+    if (bl.dofollowResult === true) dfTag = ' · <span class="dofollow-yes" title="rel=' + escapeHtml(bl.postedRel || '') + '">dofollow</span>';
+    else if (bl.dofollowResult === false) dfTag = ' · <span class="dofollow-no" title="rel=' + escapeHtml(bl.postedRel || '') + '">nofollow</span>';
+
+    if (bl.errorMessage && ['publish_failed', 'error', 'captcha_blocked', 'requires_login', 'not_commentable'].includes(bl.status)) {
       extraInfo = `<div class="list-item-error">${escapeHtml(bl.errorMessage).substring(0, 120)}</div>`;
     }
-    if (bl.commentedAt && ['commented', 'pending_moderation'].includes(bl.status)) {
-      const sites = bl.commentedWith?.join(', ') || '';
-      let dfTag = '';
-      if (bl.dofollowResult === true) dfTag = ' · <span class="dofollow-yes" title="rel=' + escapeHtml(bl.postedRel || '') + '">dofollow</span>';
-      else if (bl.dofollowResult === false) dfTag = ' · <span class="dofollow-no" title="rel=' + escapeHtml(bl.postedRel || '') + '">nofollow</span>';
-      extraInfo = `<div class="list-item-published">${bl.commentedAt.substring(0, 10)}${sites ? ' · ' + escapeHtml(sites) : ''}${dfTag}</div>`;
+
+    // C12: per-site badges from COMMENTS history (shown regardless of bl.status as long as there is history)
+    const hForBl = history.get(bl.id);
+    if (hForBl && hForBl.size > 0) {
+      const activeEntries = [...hForBl.entries()].filter(([k]) => currentKeySet.has(k));
+      const orphanEntries = [...hForBl.entries()].filter(([k]) => !currentKeySet.has(k));
+
+      const hardSuccessTotal = activeEntries.filter(([, h]) => h.hardSuccess).length;
+      const softSuccessTotal = activeEntries.filter(([, h]) => !h.hardSuccess && h.softSuccess).length;
+      const anySuccessTotal  = hardSuccessTotal + softSuccessTotal;
+
+      const mkBadge = (key, h, isOrphan) => {
+        const name = profileByKey.get(key) || h.lastProfileName || key;
+        let cls, icon, title;
+        if (h.hardSuccess)                          { cls = 'site-ok';      icon = '✓'; title = h.hardSuccess; }
+        else if (h.softSuccess)                     { cls = 'site-pending'; icon = '✎'; title = 'pending_moderation'; }
+        else if (h.pendingUserAction)               { cls = 'site-pending'; icon = '⏳'; title = 'awaiting manual'; }
+        else if (h.failCount >= MAX_FAIL_RETRIES)   { cls = 'site-fail';    icon = '✗'; title = `failed x${h.failCount}`; }
+        else if (h.failCount > 0)                   { cls = 'site-retry';   icon = '↻'; title = `failed x${h.failCount}, will retry`; }
+        else                                         { cls = 'site-retry';   icon = '·'; title = ''; }
+        const extraCls = isOrphan ? ' site-orphan' : '';
+        return `<span class="site-badge ${cls}${extraCls}" title="${escapeHtml(title)}">${escapeHtml(name)} ${icon}</span>`;
+      };
+      const siteBadges = [
+        ...activeEntries.map(([k, h]) => mkBadge(k, h, false)),
+        ...orphanEntries.map(([k, h]) => mkBadge(k, h, true))
+      ].join(' ');
+
+      // Codex 补丁：totalTargets === 0 时不展示 0/0；文案走 i18n（backlinks.softPendingCount）
+      const totalTargets = currentKeySet.size;
+      const progress = totalTargets > 0
+        ? `<span class="publish-progress">${anySuccessTotal}/${totalTargets} ✓${softSuccessTotal > 0 ? ' ' + t('backlinks.softPendingCount', { n: softSuccessTotal }) : ''}</span>`
+        : '';
+      const dateStr = bl.commentedAt ? bl.commentedAt.substring(0, 10) : '';
+      const progressSep = progress ? progress + ' ' : '';
+      extraInfo = `<div class="list-item-published">${dateStr ? dateStr + ' · ' : ''}${progressSep}${siteBadges}${dfTag}</div>`;
     }
 
     const groupKey = 'backlinks.grp' + group.charAt(0).toUpperCase() + group.slice(1);
     const statusTooltip = t('backlinks.tip_' + group);
 
     const actions = [];
-    if (['commented', 'pending_moderation'].includes(bl.status)) {
+    if (['commented', 'pending_moderation', 'partial_published'].includes(bl.status)) {
       actions.push(`<button class="btn-reverify btn btn-small" data-id="${bl.id}" data-url="${escapeHtml(bl.sourceUrl)}" title="${t('backlinks.tipReverify')}">${t('backlinks.reverify')}</button>`);
     }
-    if (['publish_failed', 'error', 'captcha_blocked'].includes(bl.status)) {
+    if (['publish_failed', 'error', 'captcha_blocked', 'requires_login', 'not_commentable', 'partial_published'].includes(bl.status)) {
       actions.push(`<button class="btn-retry btn btn-small" data-id="${bl.id}" title="${t('backlinks.tipRetry')}">${t('backlinks.retry')}</button>`);
     }
     actions.push(`<button class="btn-delete-bl btn btn-small" data-id="${bl.id}" title="${t('backlinks.tipDelete')}">x</button>`);
@@ -343,6 +506,8 @@ async function loadBacklinksList() {
   }).join('');
 
   // Wire up item action buttons
+  // C17: reverify is now site-aware — scans the page (allFrames) for each configured profile and
+  // writes 'already_exists' COMMENTS for any that are found. Then re-aggregates bl.status.
   list.querySelectorAll('.btn-reverify').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -352,32 +517,69 @@ async function loadBacklinksList() {
       btn.textContent = '...';
       try {
         const { tabId } = await chrome.runtime.sendMessage({ type: 'analyzeUrl', url });
-        const allBl = await getAllRecords(STORES.BACKLINKS);
-        const bl = allBl.find(b => b.id === blId);
-        if (bl) {
-          const website = bl.commentedWith?.[0] ? '' : '';
-          const verification = await chrome.runtime.sendMessage({ type: 'verifyComment', tabId, commentText: '', website });
-          bl.status = verification.status === 'confirmed' ? 'commented' : verification.status === 'rejected' ? 'publish_failed' : 'pending_moderation';
-          bl.lastVerified = new Date().toISOString();
-          if (verification.dofollow !== undefined) {
-            bl.dofollowResult = verification.dofollow;
-            bl.postedRel = verification.postedRel;
+        const profiles = await getSiteProfiles();
+        const hist = await buildPublishHistory();
+        const hForBl = hist.get(blId) || new Map();
+
+        let foundCount = 0;
+        for (const site of profiles) {
+          const siteKey = siteKeyOf(site);
+          if (!siteKey) continue;
+          if (hForBl.get(siteKey)?.hardSuccess) { foundCount++; continue; }
+
+          const qc = await chrome.runtime.sendMessage({
+            type: 'quickCheckExistingComment',
+            tabId,
+            website: site.website,
+            matchMode: site.matchMode || 'url'
+          });
+          if (qc?.found) {
+            let sourceDomain = '';
+            try { sourceDomain = new URL(url).hostname; } catch {}
+            await addRecords(STORES.COMMENTS, [{
+              backlinkId: blId,
+              sourceUrl: url,
+              sourceDomain,
+              commentText: '',
+              name: site.name, email: site.email, website: site.website, mode: 'reverify',
+              siteProfile: site.profileName,
+              siteKey,
+              status: 'already_exists',
+              publishedAt: new Date().toISOString()
+            }]);
+            foundCount++;
           }
+        }
+
+        const bl = await aggregateBacklinkStatus(blId);
+        if (bl) {
+          bl.lastVerified = new Date().toISOString();
           await updateRecord(STORES.BACKLINKS, bl);
         }
+        alert(t('backlinks.reverifySiteDone', { found: foundCount, total: profiles.length }));
         // Keep tab open so user can inspect the page
         await loadBacklinksList();
       } catch { btn.textContent = t('backlinks.reverify'); btn.disabled = false; }
     });
   });
 
+  // C13: retry clears all non-success COMMENTS (fail + pending_review) and resets page-blocker.
+  // Success COMMENTS (confirmed / already_exists / pending_moderation) are preserved so already-
+  // covered siteKeys stay skipped next run.
   list.querySelectorAll('.btn-retry').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
       const blId = parseInt(btn.dataset.id);
+      await deleteCommentsByBacklinkId(blId,
+        s => s === 'submit_failed' || s === 'rejected' || s === 'error' || s === 'pending_review');
       const allBl = await getAllRecords(STORES.BACKLINKS);
       const bl = allBl.find(b => b.id === blId);
-      if (bl) { bl.status = 'commentable'; delete bl.errorMessage; await updateRecord(STORES.BACKLINKS, bl); await loadBacklinksList(); }
+      if (bl) {
+        bl.status = 'commentable';
+        delete bl.errorMessage;
+        await updateRecord(STORES.BACKLINKS, bl);
+      }
+      await loadBacklinksList();
     });
   });
 
@@ -485,9 +687,15 @@ document.getElementById('btn-batch-delete').addEventListener('click', async () =
 document.getElementById('btn-batch-retry').addEventListener('click', async () => {
   const ids = [...selectedIds];
   const allBl = await getAllRecords(STORES.BACKLINKS);
+  // C13 extended: also include requires_login and partial_published so users can force a full retry
+  const RETRYABLE = new Set([
+    'publish_failed', 'error', 'captcha_blocked', 'not_commentable', 'requires_login', 'partial_published'
+  ]);
   for (const id of ids) {
     const bl = allBl.find(b => b.id === id);
-    if (bl && ['publish_failed', 'error', 'captcha_blocked', 'not_commentable'].includes(bl.status)) {
+    if (bl && RETRYABLE.has(bl.status)) {
+      await deleteCommentsByBacklinkId(id,
+        s => s === 'submit_failed' || s === 'rejected' || s === 'error' || s === 'pending_review');
       bl.status = 'commentable';
       delete bl.errorMessage;
       await updateRecord(STORES.BACKLINKS, bl);
@@ -816,11 +1024,22 @@ function getCommentConfig(detectedLinkFormat) {
 document.getElementById('btn-start-publish').addEventListener('click', async () => {
   const profiles = await getSiteProfiles();
   const checked = [...document.querySelectorAll('input[name="pub-sites"]:checked')];
-  const selectedSites = checked.map(cb => profiles[parseInt(cb.value)]).filter(Boolean);
+  let selectedSites = checked.map(cb => profiles[parseInt(cb.value)]).filter(Boolean);
 
   if (selectedSites.length === 0) {
     alert(t('publish.noSitesSelected'));
     return;
+  }
+
+  // Codex 补丁：按 siteKey 去重，防止两个 profile 指向同一 URL 时同一轮重复发布
+  {
+    const seen = new Set();
+    selectedSites = selectedSites.filter(s => {
+      const k = siteKeyOf(s);
+      if (!k || seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
   }
 
   const mode = document.getElementById('pub-mode').value;
@@ -833,8 +1052,18 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
     return;
   }
 
+  // C2: 双维度候选过滤
+  // A. 页面级阻塞：bl.status ∉ PAGE_BLOCKER_STATUSES
+  // B. 站点级覆盖：至少一个选中 siteKey 还需要发布（COMMENTS 里既无 hard-/soft-success，failCount < 上限，非 pending_review）
   const backlinks = await getAllRecords(STORES.BACKLINKS);
-  let commentable = backlinks.filter(b => b.status === 'commentable');
+  const history = await buildPublishHistory();
+  const selectedKeys = selectedSites.map(s => ({ site: s, key: siteKeyOf(s) }));
+
+  let commentable = backlinks.filter(bl => {
+    if (PAGE_BLOCKER_STATUSES.has(bl.status)) return false;                   // A
+    const hForBl = history.get(bl.id);
+    return selectedKeys.some(({ key }) => shouldPublish(hForBl, key));         // B
+  });
   if (maxPages > 0 && commentable.length > maxPages) {
     commentable = commentable.slice(0, maxPages);
   }
@@ -913,6 +1142,9 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
 
   let pubStats = { ...initialStats };
 
+  // C3: prefetch publish history once; refreshed per-backlink below.
+  let history = await buildPublishHistory();
+
   for (let i = startPageIndex; i < commentable.length; i++) {
     if (!publishRunning) {
       addLog(logEntries, t('backlinks.stopped'), 'error');
@@ -936,6 +1168,9 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
     const siteStart = i === startPageIndex ? startSiteIndex : 0;
     bl._dofollowVerified = undefined;
     bl._postedRel = undefined;
+
+    // C3/C4: site-level coverage map for this backlink (used by the for-s skip check below)
+    let hForBl = history.get(bl.id) || new Map();
 
     // Page-level pre-check: open once, analyze, close — skip page if unusable
     let pageAnalysis = null;
@@ -1000,10 +1235,29 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
 
       const site = selectedSites[s];
       const { name, email, website } = site;
+      const siteKey = siteKeyOf(site);
+
+      // C4: per-site skip using COMMENTS history (hForBl pre-computed for this backlink)
+      if (!shouldPublish(hForBl, siteKey)) {
+        const h = hForBl?.get(siteKey);
+        let logKey, resultTag;
+        if (h?.hardSuccess || h?.softSuccess) { logKey = 'publish.skipAlreadyPublished';  resultTag = 'already_exists'; }
+        else if (h?.pendingUserAction)         { logKey = 'publish.skipPendingUserAction'; resultTag = 'pending_user_action'; }
+        else                                    { logKey = 'publish.skipRetryExhausted';    resultTag = 'skipped_retry_cap'; }
+        addLog(logEntries, t(logKey, { site: site.profileName }), 'info');
+        if (!bl._siteResults) bl._siteResults = [];
+        bl._siteResults.push(resultTag);
+        continue;
+      }
 
       addLog(logEntries, `--- [${i + 1}/${commentable.length}] ${site.profileName} ---`, 'info');
 
+      // C7 scope fix: hoist these so the catch block can read them safely
       let tabId = null;
+      let freshAnalysis = null;
+      let fieldSelectors = {};
+      let frameId = null;
+      let captchaInfo = null;
       try {
         addLog(logEntries, t('publish.opening', { url: bl.sourceUrl }), 'info');
 
@@ -1019,11 +1273,41 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
 
         addLog(logEntries, `[${pageInfo.language}] ${pageInfo.title}`, 'info');
 
-        // Pre-check: has this site already commented on this page?
-        const preCheck = await chrome.runtime.sendMessage({
-          type: 'verifyComment', tabId, commentText: '', website
+        // C15: re-analyze in the publish tab to get a valid frameId for iframe comment forms
+        freshAnalysis = await chrome.runtime.sendMessage({
+          type: 'analyzePageViaContentScript', tabId
+        }).catch(() => null) || bl.commentFormAnalysis || null;
+
+        // C5: quick local DOM scan (all frames) instead of slow verifyComment preCheck
+        const quickCheck = await chrome.runtime.sendMessage({
+          type: 'quickCheckExistingComment', tabId, website,
+          matchMode: site.matchMode || 'url'
         });
-        if (preCheck.verified) {
+        if (quickCheck?.found) {
+          const existing = hForBl?.get(siteKey);
+          if (!existing?.hardSuccess) {
+            await addRecords(STORES.COMMENTS, [{
+              backlinkId: bl.id,
+              sourceUrl: bl.sourceUrl,
+              sourceDomain: bl.sourceDomain,
+              commentText: '',
+              name, email, website, mode,
+              siteProfile: site.profileName,
+              siteKey,
+              status: 'already_exists',
+              publishedAt: new Date().toISOString()
+            }]);
+            if (!hForBl) {
+              hForBl = new Map();
+              history.set(bl.id, hForBl);
+            }
+            hForBl.set(siteKey, {
+              ...(existing || { failCount: 0, pendingUserAction: false, lastProfileName: site.profileName }),
+              hardSuccess: 'already_exists',
+              lastStatus: 'already_exists',
+              lastAt: new Date().toISOString()
+            });
+          }
           addLog(logEntries, t('publish.alreadyCommented', { site: site.profileName }), 'info');
           if (!bl._siteResults) bl._siteResults = [];
           bl._siteResults.push('already_exists');
@@ -1038,13 +1322,11 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         const commentConfig = getCommentConfig(pageInfo.linkFormat);
         commentConfig.linkUrl = commentConfig.linkUrl || website;
 
-        // Use pre-check analysis for field selectors and frame info
-        const freshAnalysis = pageAnalysis;
-        const fieldSelectors = (freshAnalysis && freshAnalysis.fields && Object.keys(freshAnalysis.fields).length > 0)
+        fieldSelectors = (freshAnalysis && freshAnalysis.fields && Object.keys(freshAnalysis.fields).length > 0)
           ? freshAnalysis.fields
           : (bl.commentFormAnalysis?.fields || {});
-        const frameId = freshAnalysis?.frameId;
-        const captchaInfo = freshAnalysis?.captcha || null;
+        frameId = freshAnalysis?.frameId;
+        captchaInfo = freshAnalysis?.captcha || null;
 
         if (captchaInfo && (captchaInfo.type === 'math' || captchaInfo.type === 'text')) {
           const desc = captchaInfo.type === 'math'
@@ -1165,16 +1447,27 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
             }
 
             if (commentStatus === 'confirmed') pubStats.confirmed++;
-            else if (commentStatus === 'captcha') pubStats.captcha++;
-            else if (commentStatus === 'requires_login') {
-              pubStats.failed++;
-              addLog(logEntries, t('publish.requiresLogin'), 'error');
-              bl.status = 'not_commentable';
-              bl.errorMessage = 'Requires login/registration';
+            else if (commentStatus === 'captcha') {
+              // C8: page-level blocker — same page would hit the same CAPTCHA for other profiles
+              pubStats.captcha++;
+              addLog(logEntries, t('publish.captchaBlocked'), 'error');
+              bl.status = 'captcha_blocked';
+              bl.errorMessage = 'CAPTCHA could not be solved';
               await updateRecord(STORES.BACKLINKS, bl);
               if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
               tabId = null;
-              break; // skip remaining sites for this page
+              break;
+            }
+            else if (commentStatus === 'requires_login') {
+              // C8: page-level blocker — no other profile can post either
+              pubStats.failed++;
+              addLog(logEntries, t('publish.requiresLogin'), 'error');
+              bl.status = 'requires_login';
+              bl.errorMessage = 'Target page requires login';
+              await updateRecord(STORES.BACKLINKS, bl);
+              if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
+              tabId = null;
+              break;
             }
             else if (commentStatus === 'rejected') pubStats.failed++;
             else pubStats.moderation++;
@@ -1192,18 +1485,22 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           pubStats.moderation++;
         }
 
-        await addRecords(STORES.COMMENTS, [{
-          backlinkId: bl.id,
-          sourceUrl: bl.sourceUrl,
-          sourceDomain: bl.sourceDomain,
-          commentText,
-          name, email, website, mode,
-          siteProfile: site.profileName,
-          status: commentStatus,
-          dofollow: bl._dofollowVerified,
-          postedRel: bl._postedRel,
-          publishedAt: new Date().toISOString()
-        }]);
+        // C1/D1: requires_login / captcha are page-level now; skip COMMENTS write for them
+        if (commentStatus !== 'requires_login' && commentStatus !== 'captcha') {
+          await addRecords(STORES.COMMENTS, [{
+            backlinkId: bl.id,
+            sourceUrl: bl.sourceUrl,
+            sourceDomain: bl.sourceDomain,
+            commentText,
+            name, email, website, mode,
+            siteProfile: site.profileName,
+            siteKey,                          // C6
+            status: commentStatus,
+            dofollow: bl._dofollowVerified,
+            postedRel: bl._postedRel,
+            publishedAt: new Date().toISOString()
+          }]);
+        }
 
         if (!bl._siteResults) bl._siteResults = [];
         bl._siteResults.push(commentStatus);
@@ -1213,6 +1510,20 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         pubStats.failed++;
         if (!bl._siteResults) bl._siteResults = [];
         bl._siteResults.push('error');
+
+        // C7: also write an error-level COMMENTS so failCount accumulates and respects MAX_FAIL_RETRIES
+        await addRecords(STORES.COMMENTS, [{
+          backlinkId: bl.id,
+          sourceUrl: bl.sourceUrl,
+          sourceDomain: bl.sourceDomain,
+          commentText: '',
+          name, email, website, mode,
+          siteProfile: site.profileName,
+          siteKey,
+          status: 'error',
+          errorMessage: err.message?.substring(0, 500),
+          publishedAt: new Date().toISOString()
+        }]);
 
         // Log detailed failure info for analysis
         await addRecords(STORES.FAILURE_LOGS, [{
@@ -1247,20 +1558,51 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
       }
     }
 
-    // Update backlink status based on results
-    const results = bl._siteResults || [];
-    const hasConfirmed = results.includes('confirmed');
-    const allFailed = results.every(r => r === 'submit_failed' || r === 'rejected' || r === 'error');
-    const hasCaptcha = results.includes('captcha');
+    // C10: aggregate bl.status from COMMENTS history; skip if a page-blocker was already set in C8/C9
+    const PAGE_BLOCKERS_AGG = ['requires_login', 'captcha_blocked', 'not_commentable', 'error'];
+    if (!PAGE_BLOCKERS_AGG.includes(bl.status)) {
+      const fullHist = await buildPublishHistory();
+      const hForBlAgg = fullHist.get(bl.id) || new Map();
 
-    if (hasConfirmed) bl.status = 'commented';
-    else if (hasCaptcha) bl.status = 'captcha_blocked';
-    else if (allFailed && results.length > 0) bl.status = 'publish_failed';
-    else bl.status = 'pending_moderation';
+      const currentProfiles = await getSiteProfiles();
+      // Codex #6: dedupe siteKey to avoid inflated denominator
+      const targetKeys = [...new Set(currentProfiles.map(siteKeyOf).filter(Boolean))];
+
+      let hardSuccessCount = 0, softSuccessCount = 0, pendingCount = 0, failOnlyCount = 0;
+      for (const key of targetKeys) {
+        const h = hForBlAgg.get(key);
+        if (!h) continue;
+        if (h.hardSuccess) hardSuccessCount++;
+        else if (h.softSuccess) softSuccessCount++;
+        else if (h.pendingUserAction) pendingCount++;
+        else if (h.failCount > 0) failOnlyCount++;
+      }
+      const anySuccessCount = hardSuccessCount + softSuccessCount;
+
+      // Codex #2: only mark commented if all targets are hard-success
+      if (targetKeys.length > 0 && hardSuccessCount === targetKeys.length) {
+        bl.status = 'commented';
+      } else if (targetKeys.length > 0 && anySuccessCount === targetKeys.length) {
+        bl.status = 'pending_moderation';
+      } else if (anySuccessCount > 0) {
+        bl.status = 'partial_published';
+      } else if (pendingCount > 0) {
+        bl.status = 'pending_moderation';
+      } else if (failOnlyCount > 0) {
+        bl.status = 'publish_failed';
+      } else {
+        bl.status = bl.status || 'commentable';
+      }
+
+      // commentedWith: cumulative profiles that ever achieved success; fallback for deleted profiles
+      const profileByKey = new Map(currentProfiles.map(p => [siteKeyOf(p), p.profileName]));
+      bl.commentedWith = [...hForBlAgg.entries()]
+        .filter(([, h]) => h.hardSuccess || h.softSuccess)
+        .map(([k, h]) => profileByKey.get(k) || h.lastProfileName || k);
+    }
 
     bl.commentedAt = new Date().toISOString();
-    bl.commentedWith = selectedSites.map(s => s.profileName);
-    bl.verifyResults = results;
+    bl.verifyResults = bl._siteResults || [];
     if (bl._dofollowVerified !== undefined) {
       bl.dofollowResult = bl._dofollowVerified;
       bl.postedRel = bl._postedRel;
@@ -1269,6 +1611,9 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
     delete bl._dofollowVerified;
     delete bl._postedRel;
     await updateRecord(STORES.BACKLINKS, bl);
+
+    // C3: refresh history for the next backlink (picks up COMMENTS we just wrote)
+    history = await buildPublishHistory();
 
     if (i < commentable.length - 1 && publishRunning) {
       addLog(logEntries, t('publish.waiting', { seconds: delay }), 'info');

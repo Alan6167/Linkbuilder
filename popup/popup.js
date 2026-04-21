@@ -556,7 +556,9 @@ async function loadBacklinksList() {
           bl.lastVerified = new Date().toISOString();
           await updateRecord(STORES.BACKLINKS, bl);
         }
-        alert(t('backlinks.reverifySiteDone', { found: foundCount, total: profiles.length }));
+        // 替代 alert：在按钮上短暂显示结果，再让列表刷新由徽章接力呈现
+        btn.textContent = `${foundCount}/${profiles.length} ✓`;
+        await new Promise(r => setTimeout(r, 1500));
         // Keep tab open so user can inspect the page
         await loadBacklinksList();
       } catch { btn.textContent = t('backlinks.reverify'); btn.disabled = false; }

@@ -1,6 +1,6 @@
 import { STORES, addRecords, getAllRecords, updateRecord, deleteRecord, deleteCommentsByBacklinkId, clearStore, getRecordCount, getSetting, setSetting } from '../lib/db.js';
 import { parseRow, filterBacklinks, getFilterStats, DEFAULT_FILTER_CONFIG } from '../lib/filter.js';
-import { generateComment, setRateLimitCallback, formatLink, setProvider, getProvider } from '../lib/gemini.js';
+import { generateComment, setRateLimitCallback, formatLink, setProvider, getProvider, getLastAiMeta } from '../lib/gemini.js';
 import { t, setLanguage, getLanguage } from '../lib/i18n.js';
 
 // ========== State ==========
@@ -1372,6 +1372,13 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
       let fieldSelectors = {};
       let frameId = null;
       let captchaInfo = null;
+      // Diagnostic snapshots — used by every failure branch / catch when
+      // assembling FAILURE_LOGS so we never lose per-phase context.
+      let lastFillResult = null;
+      let lastSubmitResult = null;
+      let lastVerifyResult = null;
+      let lastAiMetaSnapshot = null;
+      let lastCaptchaAttempt = null;
       try {
         addLog(logEntries, t('publish.opening', { url: bl.sourceUrl }), 'info');
 
@@ -1487,6 +1494,7 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           siteDescription: site.siteDescription || ''
         }, commentConfig);
         currentAttemptTimings.generateMs = Math.round(performance.now() - t0Gen);
+        lastAiMetaSnapshot = getLastAiMeta();
 
         // Dofollow bypass: inject \n into href
         if (bypassActive) {
@@ -1506,6 +1514,7 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           type: 'fillCommentForm', tabId, formData, fieldSelectors, frameId, honeypotFields
         });
         currentAttemptTimings.fillMs = Math.round(performance.now() - t0Fill);
+        lastFillResult = fillResult;
 
         if (!fillResult.success) {
           const details = Object.entries(fillResult.results || {})
@@ -1533,6 +1542,7 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
             solved: !!captchaResult?.solved,
             reason: captchaResult?.reason || null
           };
+          lastCaptchaAttempt = captchaAttempt;
           if (captchaResult.solved) {
             addLog(logEntries, t('publish.captchaSolved', { expr: captchaResult.type === 'math' ? captchaResult.answer : '', answer: captchaResult.answer }), 'success');
           } else {
@@ -1551,6 +1561,7 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
             frameId
           });
           currentAttemptTimings.submitMs = Math.round(performance.now() - t0Submit);
+          lastSubmitResult = submitResult;
 
           if (submitResult.success) {
             addLog(logEntries, t('publish.submitted'), 'success');
@@ -1562,6 +1573,7 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
               website
             });
             currentAttemptTimings.verifyMs = Math.round(performance.now() - t0Verify);
+            lastVerifyResult = verification;
 
             commentStatus = verification.status;
             const statusKey = `publish.verify_${commentStatus}`;
@@ -1593,8 +1605,11 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
                 errorMessage: bl.errorMessage,
                 pageAnalysis: pageAnalysisSummary,
                 formAnalysis: freshAnalysis || null,
+                fieldFillResults: lastFillResult?.fieldFillResults,
+                submitResult: lastSubmitResult,
                 verifyResult: verification,
                 captchaDetails: captchaAttempt,
+                aiMeta: lastAiMetaSnapshot,
                 timings: { ...currentAttemptTimings, totalMs: Math.round(performance.now() - attemptStartMs) },
                 logEntries: [...currentAttemptLog]
               });
@@ -1614,7 +1629,10 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
                 errorMessage: bl.errorMessage,
                 pageAnalysis: pageAnalysisSummary,
                 formAnalysis: freshAnalysis || null,
+                fieldFillResults: lastFillResult?.fieldFillResults,
+                submitResult: lastSubmitResult,
                 verifyResult: verification,
+                aiMeta: lastAiMetaSnapshot,
                 timings: { ...currentAttemptTimings, totalMs: Math.round(performance.now() - attemptStartMs) },
                 logEntries: [...currentAttemptLog]
               });
@@ -1629,8 +1647,11 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
                 errorMessage: verification?.reason || 'Comment submission rejected',
                 pageAnalysis: pageAnalysisSummary,
                 formAnalysis: freshAnalysis || null,
+                fieldFillResults: lastFillResult?.fieldFillResults,
+                submitResult: lastSubmitResult,
                 verifyResult: verification,
                 captchaDetails: captchaAttempt,
+                aiMeta: lastAiMetaSnapshot,
                 timings: { ...currentAttemptTimings, totalMs: Math.round(performance.now() - attemptStartMs) },
                 logEntries: [...currentAttemptLog]
               });
@@ -1645,8 +1666,10 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
               errorMessage: submitResult.error || 'submit_failed',
               pageAnalysis: pageAnalysisSummary,
               formAnalysis: freshAnalysis || null,
+              fieldFillResults: lastFillResult?.fieldFillResults,
               submitResult,
               captchaDetails: captchaAttempt,
+              aiMeta: lastAiMetaSnapshot,
               timings: { ...currentAttemptTimings, totalMs: Math.round(performance.now() - attemptStartMs) },
               logEntries: [...currentAttemptLog]
             });
@@ -1706,6 +1729,11 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           errorStack: err.stack?.split('\n').slice(0, 5).join('\n'),
           formAnalysis: freshAnalysis || bl.commentFormAnalysis || null,
           pageAnalysis: pageAnalysisSummary,
+          fieldFillResults: lastFillResult?.fieldFillResults,
+          submitResult: lastSubmitResult,
+          verifyResult: lastVerifyResult,
+          captchaDetails: lastCaptchaAttempt,
+          aiMeta: lastAiMetaSnapshot,
           timings: { ...currentAttemptTimings, totalMs: Math.round(performance.now() - attemptStartMs) },
           logEntries: [...currentAttemptLog]
         });

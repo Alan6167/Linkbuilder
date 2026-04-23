@@ -655,10 +655,27 @@ function verifyCommentOnPage(commentText, website) {
   const pageHtml = document.body?.innerHTML || '';
   const currentUrl = window.location.href;
 
+  // Collect privacy-safe diagnostics once so every return path can carry them
+  // without having to repeat the capture in each branch. Only lengths/flags —
+  // page text itself is never included.
+  const pageTitle = (document.title || '').slice(0, 120);
+  const bodyPreviewLen = pageText.length;
+  const captchaPresent = !!document.querySelector(
+    '.g-recaptcha, .h-captcha, [data-sitekey], .cf-turnstile, iframe[src*="recaptcha"], iframe[src*="hcaptcha"]'
+  );
+  const enrich = (r) => Object.assign({}, r, {
+    matched: !!r.verified,
+    pageTitle,
+    bodyPreviewLen,
+    captchaPresent
+  });
+  const origReturn = (r) => enrich(r);
+  const _return = origReturn;
+
   // URL-based instant detection
   const instantPublish = currentUrl.includes('#comment-');
   if (currentUrl.includes('unapproved=')) {
-    return { verified: false, status: 'pending_moderation', reason: 'Comment awaiting moderation (unapproved in URL)' };
+    return _return({ verified: false, status: 'pending_moderation', reason: 'Comment awaiting moderation (unapproved in URL)', matchedPattern: 'url:unapproved' });
   }
 
   // Check for common error/moderation messages
@@ -704,13 +721,13 @@ function verifyCommentOnPage(commentText, website) {
     '.g-recaptcha, .h-captcha, [data-sitekey], .cf-turnstile, iframe[src*="recaptcha"], iframe[src*="hcaptcha"]'
   );
   if (hardCaptchaElements.length > 0) {
-    return { verified: false, status: 'captcha', reason: 'CAPTCHA/human verification detected' };
+    return _return({ verified: false, status: 'captcha', reason: 'CAPTCHA/human verification detected', matchedPattern: 'dom:hardCaptcha' });
   }
 
   // Check for moderation messages
   for (const pattern of moderationPatterns) {
     if (pattern.test(pageText)) {
-      return { verified: false, status: 'pending_moderation', reason: 'Comment awaiting moderation' };
+      return _return({ verified: false, status: 'pending_moderation', reason: 'Comment awaiting moderation', matchedPattern: pattern.toString() });
     }
   }
 
@@ -720,7 +737,7 @@ function verifyCommentOnPage(commentText, website) {
     const alerts = document.querySelectorAll('.error, .alert, .notice, .message, #error, .wp-die-message');
     for (const alert of alerts) {
       if (pattern.test(alert.textContent)) {
-        return { verified: false, status: 'rejected', reason: alert.textContent.trim().substring(0, 200) };
+        return _return({ verified: false, status: 'rejected', reason: alert.textContent.trim().substring(0, 200), matchedPattern: pattern.toString() });
       }
     }
   }
@@ -729,19 +746,19 @@ function verifyCommentOnPage(commentText, website) {
   const snippet = commentText.substring(0, 50).trim();
   if (snippet && pageText.includes(snippet)) {
     const dfResult = checkDofollow(website);
-    return { verified: true, status: 'confirmed', reason: 'Comment text found on page', ...dfResult };
+    return _return({ verified: true, status: 'confirmed', reason: 'Comment text found on page', matchedPattern: 'snippet:body', ...dfResult });
   }
 
   // Check if website URL appears in a new comment/link
   if (website && pageHtml.includes(website)) {
     const dfResult = checkDofollow(website);
-    return { verified: true, status: 'confirmed', reason: 'Website link found on page', ...dfResult };
+    return _return({ verified: true, status: 'confirmed', reason: 'Website link found on page', matchedPattern: 'website:html', ...dfResult });
   }
 
   // If form is gone and no errors, likely submitted successfully (moderation or redirect)
   const formStillExists = document.querySelector('#commentform, .comment-form, form[action*="comment"]');
   if (!formStillExists) {
-    return { verified: false, status: 'pending_moderation', reason: 'Form gone, likely submitted (may need moderation)' };
+    return _return({ verified: false, status: 'pending_moderation', reason: 'Form gone, likely submitted (may need moderation)', matchedPattern: 'dom:formGone' });
   }
 
   // Detect login/registration requirement (appears after submit attempt)
@@ -773,7 +790,7 @@ function verifyCommentOnPage(commentText, website) {
   for (const sel of loginSignals) {
     const el = document.querySelector(sel);
     if (el && el.offsetParent !== null) {
-      return { verified: false, status: 'requires_login', reason: 'Login/registration required to comment' };
+      return _return({ verified: false, status: 'requires_login', reason: 'Login/registration required to comment', matchedPattern: 'login-signal:' + sel });
     }
   }
 
@@ -784,18 +801,18 @@ function verifyCommentOnPage(commentText, website) {
     const text = dialog.textContent || '';
     for (const pattern of loginPatterns) {
       if (pattern.test(text)) {
-        return { verified: false, status: 'requires_login', reason: 'Login/registration required: ' + text.trim().substring(0, 100) };
+        return _return({ verified: false, status: 'requires_login', reason: 'Login/registration required: ' + text.trim().substring(0, 100), matchedPattern: pattern.toString() });
       }
     }
   }
 
   // Also check page URL for login redirect
   if (currentUrl.includes('/login') || currentUrl.includes('/signin') || currentUrl.includes('/register') || currentUrl.includes('/signup')) {
-    return { verified: false, status: 'requires_login', reason: 'Redirected to login page' };
+    return _return({ verified: false, status: 'requires_login', reason: 'Redirected to login page', matchedPattern: 'url:login-path' });
   }
 
   // Form still exists - might mean nothing happened or page didn't reload
-  return { verified: false, status: 'unknown', reason: 'Could not verify - form still present' };
+  return _return({ verified: false, status: 'unknown', reason: 'Could not verify - form still present', matchedPattern: 'fallthrough' });
 
   // Dofollow verification: check rel attribute on the posted link
   function checkDofollow(site) {
@@ -1006,21 +1023,29 @@ async function fillForm(formData, fieldSelectors, honeypotFields) {
     return {
       success: false,
       results: { comment: 'not_found' },
+      fieldFillResults: [{ field: 'comment', selector: fieldSelectors.comment?.selector || null, found: false, filledLen: 0, reason: 'not_found' }],
       filledCount: 0,
       totalCount: Object.keys(formData).length
     };
   }
+
+  // fieldFillResults is the privacy-safe diagnostic view: per-field selector,
+  // found/not_found, the length of what we wrote (not the value itself), and
+  // the outcome reason — consumed by popup.js writeFailureLog.
+  const fieldFillResults = [];
 
   // Step 2: fill each field
   for (const [field, value] of Object.entries(formData)) {
     const selector = fieldSelectors[field];
     if (!selector) {
       results[field] = 'no_selector';
+      fieldFillResults.push({ field, selector: null, found: false, filledLen: 0, reason: 'no_selector' });
       continue;
     }
 
     // Re-query elements (some may have just been rendered by JS)
     const element = findElement(selector);
+    const selStr = selector.selector || selector.name || null;
 
     if (element) {
       element.focus();
@@ -1041,8 +1066,10 @@ async function fillForm(formData, fieldSelectors, honeypotFields) {
 
         if (element.textContent.length > 0) {
           results[field] = 'filled';
+          fieldFillResults.push({ field, selector: selStr, found: true, filledLen: element.textContent.length, reason: 'filled' });
         } else {
           results[field] = 'set_failed';
+          fieldFillResults.push({ field, selector: selStr, found: true, filledLen: 0, reason: 'set_failed' });
         }
       } else {
         // For regular input/textarea
@@ -1051,14 +1078,18 @@ async function fillForm(formData, fieldSelectors, honeypotFields) {
         element.dispatchEvent(new Event('change', { bubbles: true }));
         element.dispatchEvent(new Event('blur', { bubbles: true }));
 
-        if (element.value === value || element.value.length > 0) {
+        const elValLen = (element.value || '').length;
+        if (element.value === value || elValLen > 0) {
           results[field] = 'filled';
+          fieldFillResults.push({ field, selector: selStr, found: true, filledLen: elValLen, reason: 'filled' });
         } else {
           results[field] = 'set_failed';
+          fieldFillResults.push({ field, selector: selStr, found: true, filledLen: 0, reason: 'set_failed' });
         }
       }
     } else {
       results[field] = 'not_found';
+      fieldFillResults.push({ field, selector: selStr, found: false, filledLen: 0, reason: 'not_found' });
     }
   }
 
@@ -1068,6 +1099,7 @@ async function fillForm(formData, fieldSelectors, honeypotFields) {
   return {
     success: commentFilled,
     results,
+    fieldFillResults,
     filledCount,
     totalCount: Object.keys(formData).length
   };
@@ -1076,9 +1108,11 @@ async function fillForm(formData, fieldSelectors, honeypotFields) {
 // Injected function: click submit button
 function clickSubmit(submitSelector) {
   let button = null;
+  let matchedSelector = null;
 
   if (submitSelector?.selector) {
     button = document.querySelector(submitSelector.selector);
+    if (button) matchedSelector = submitSelector.selector;
   }
 
   if (!button) {
@@ -1094,24 +1128,24 @@ function clickSubmit(submitSelector) {
     for (const sel of candidates) {
       try {
         button = document.querySelector(sel);
-        if (button) break;
+        if (button) { matchedSelector = sel; break; }
       } catch { /* ignore invalid selectors */ }
     }
   }
 
   if (button) {
     button.click();
-    return { success: true };
+    return { success: true, buttonSelector: matchedSelector, clicked: true, navigationHappened: false };
   }
 
   // Fallback: use HTMLFormElement.prototype.submit to bypass name="submit" shadow
   const form = document.querySelector('#commentform, .comment-form, form[action*="comment"]');
   if (form) {
     HTMLFormElement.prototype.submit.call(form);
-    return { success: true, method: 'form_submit' };
+    return { success: true, buttonSelector: 'form.submit()', clicked: false, navigationHappened: false, method: 'form_submit' };
   }
 
-  return { success: false, error: 'Submit button not found' };
+  return { success: false, buttonSelector: null, clicked: false, navigationHappened: false, error: 'Submit button not found' };
 }
 
 console.log('Linkbuilder background service worker loaded');

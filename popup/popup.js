@@ -929,7 +929,7 @@ document.getElementById('btn-stop-analyze').addEventListener('click', () => {
 // Analyze all pending backlinks - uses LOCAL content script (no API needed)
 document.getElementById('btn-analyze-all').addEventListener('click', async () => {
   const backlinks = await getAllRecords(STORES.BACKLINKS);
-  const pending = backlinks.filter(b => b.status === 'pending');
+  const pending = backlinks.filter(b => STATUS_GROUPS.pending.includes(b.status));
 
   if (pending.length === 0) {
     alert(t('backlinks.noPending'));

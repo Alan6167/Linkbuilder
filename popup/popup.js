@@ -535,6 +535,7 @@ async function loadBacklinksList() {
     }
     if (['publish_failed', 'error', 'captcha_blocked', 'requires_login', 'not_commentable', 'partial_published'].includes(bl.status)) {
       actions.push(`<button class="btn-retry btn btn-small" data-id="${bl.id}" title="${t('backlinks.tipRetry')}">${t('backlinks.retry')}</button>`);
+      actions.push(`<button class="btn-log-details btn btn-small" data-id="${bl.id}" title="${t('failure.detailsTip')}">${t('failure.details')}</button>`);
       actions.push(`<button class="btn-blacklist-bl btn btn-small" data-id="${bl.id}" title="${t('backlinks.tipBlacklist')}">+${t('backlinks.blacklist')}</button>`);
     }
     actions.push(`<button class="btn-delete-bl btn btn-small" data-id="${bl.id}" title="${t('backlinks.tipDelete')}">x</button>`);
@@ -646,6 +647,14 @@ async function loadBacklinksList() {
       selectedIds.delete(id);
       await deleteRecord(STORES.BACKLINKS, id);
       await loadBacklinksList();
+    });
+  });
+
+  list.querySelectorAll('.btn-log-details').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = parseInt(btn.dataset.id);
+      await openFailureModal(id);
     });
   });
 
@@ -1784,7 +1793,8 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
                 captchaDetails: captchaAttempt,
                 aiMeta: lastAiMetaSnapshot,
                 timings: { ...currentAttemptTimings, totalMs: Math.round(performance.now() - attemptStartMs) },
-                logEntries: [...currentAttemptLog]
+                logEntries: [...currentAttemptLog],
+                _tabId: tabId, _frameId: frameId
               });
               if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
               tabId = null;
@@ -1807,7 +1817,8 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
                 verifyResult: verification,
                 aiMeta: lastAiMetaSnapshot,
                 timings: { ...currentAttemptTimings, totalMs: Math.round(performance.now() - attemptStartMs) },
-                logEntries: [...currentAttemptLog]
+                logEntries: [...currentAttemptLog],
+                _tabId: tabId, _frameId: frameId
               });
               if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
               tabId = null;
@@ -1826,7 +1837,8 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
                 captchaDetails: captchaAttempt,
                 aiMeta: lastAiMetaSnapshot,
                 timings: { ...currentAttemptTimings, totalMs: Math.round(performance.now() - attemptStartMs) },
-                logEntries: [...currentAttemptLog]
+                logEntries: [...currentAttemptLog],
+                _tabId: tabId, _frameId: frameId
               });
             }
             else pubStats.moderation++;
@@ -1844,7 +1856,8 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
               captchaDetails: captchaAttempt,
               aiMeta: lastAiMetaSnapshot,
               timings: { ...currentAttemptTimings, totalMs: Math.round(performance.now() - attemptStartMs) },
-              logEntries: [...currentAttemptLog]
+              logEntries: [...currentAttemptLog],
+              _tabId: tabId, _frameId: frameId
             });
           }
 
@@ -1908,7 +1921,8 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           captchaDetails: lastCaptchaAttempt,
           aiMeta: lastAiMetaSnapshot,
           timings: { ...currentAttemptTimings, totalMs: Math.round(performance.now() - attemptStartMs) },
-          logEntries: [...currentAttemptLog]
+          logEntries: [...currentAttemptLog],
+          _tabId: tabId, _frameId: frameId
         });
 
         if (tabId) {
@@ -2041,8 +2055,28 @@ function resetAttemptDiagnostics() {
 // Canonical writer for FAILURE_LOGS. Every failure path in the publish loop
 // — soft-failure branches and the throw catch alike — funnels through here so
 // the schema stays consistent (see docs/plan §B.1).
+//
+// If the user has opted into capturing form HTML snippets (off by default
+// because the HTML can include CSRF nonces) AND the caller supplied a tabId,
+// we fetch up to 500 chars of outerHTML around the comment form via the new
+// captureFormSnippet message handler and attach it to the record.
 async function writeFailureLog(bl, site, detail = {}) {
   try {
+    let formHtmlSnippet = detail.formHtmlSnippet;
+    if (!formHtmlSnippet && detail._tabId) {
+      try {
+        const captureOn = (await getSetting('captureFormSnippet')) === true;
+        if (captureOn) {
+          const res = await chrome.runtime.sendMessage({
+            type: 'captureFormSnippet',
+            tabId: detail._tabId,
+            frameId: detail._frameId ?? null
+          });
+          if (res?.snippet) formHtmlSnippet = res.snippet;
+        }
+      } catch {}
+    }
+    const { _tabId, _frameId, ...cleanDetail } = detail;
     const record = {
       sourceUrl: bl?.sourceUrl || '',
       sourceDomain: bl?.sourceDomain || '',
@@ -2053,7 +2087,8 @@ async function writeFailureLog(bl, site, detail = {}) {
       status: detail.status || null,
       stage: 'publish',
       loggedAt: new Date().toISOString(),
-      ...detail
+      ...cleanDetail,
+      ...(formHtmlSnippet ? { formHtmlSnippet } : {})
     };
     await addRecords(STORES.FAILURE_LOGS, [record]);
   } catch (e) {
@@ -2144,6 +2179,10 @@ async function loadSettings() {
   const skipLib = await getSetting('skipLibraryOnImport');
   document.getElementById('setting-skip-library').checked = skipLib !== false;
 
+  // formHtmlSnippet capture (default OFF because the HTML may contain CSRF nonces)
+  const captureSnippet = await getSetting('captureFormSnippet');
+  document.getElementById('setting-capture-form-snippet').checked = captureSnippet === true;
+
   await refreshBlacklistInfo();
   await refreshLibraryInfo();
 
@@ -2182,6 +2221,10 @@ document.getElementById('setting-delete-on-blacklist')?.addEventListener('change
 
 document.getElementById('setting-skip-library')?.addEventListener('change', async (e) => {
   await setSetting('skipLibraryOnImport', e.target.checked);
+});
+
+document.getElementById('setting-capture-form-snippet')?.addEventListener('change', async (e) => {
+  await setSetting('captureFormSnippet', e.target.checked);
 });
 
 document.getElementById('btn-export-blacklist')?.addEventListener('click', async () => {
@@ -2338,6 +2381,110 @@ document.getElementById('import-sites-input').addEventListener('change', async (
 });
 
 // Export failure logs
+// ========== Failure details modal ==========
+// Structured view of FAILURE_LOGS rows for a single backlink. Rendered
+// imperatively: we fetch all rows that match backlinkId, sort by loggedAt
+// descending, and let the user flip between multiple attempts via a select.
+let failureModalLogs = [];
+
+function fmtVal(v) {
+  if (v === null || v === undefined) return '-';
+  if (typeof v === 'object') return JSON.stringify(v, null, 2);
+  return String(v);
+}
+
+function renderKv(obj) {
+  if (!obj || typeof obj !== 'object') return `<div class="kv-empty">${escapeHtml(t('failure.noData'))}</div>`;
+  const entries = Object.entries(obj);
+  if (entries.length === 0) return `<div class="kv-empty">${escapeHtml(t('failure.noData'))}</div>`;
+  return '<dl class="kv-list">' + entries.map(([k, v]) =>
+    `<dt>${escapeHtml(k)}</dt><dd><pre>${escapeHtml(fmtVal(v))}</pre></dd>`
+  ).join('') + '</dl>';
+}
+
+function renderFailurePanes(log) {
+  const panes = {
+    summary: {
+      failureType: log.failureType,
+      status: log.status,
+      sourceUrl: log.sourceUrl,
+      sourceDomain: log.sourceDomain,
+      siteProfile: log.siteProfile,
+      loggedAt: log.loggedAt,
+      errorMessage: log.errorMessage,
+      timings: log.timings
+    },
+    form: {
+      formAnalysis: log.formAnalysis,
+      fieldFillResults: log.fieldFillResults,
+      submitResult: log.submitResult,
+      honeypotFieldsFound: log.honeypotFieldsFound,
+      formHtmlSnippet: log.formHtmlSnippet
+    },
+    page: {
+      pageAnalysis: log.pageAnalysis
+    },
+    verify: {
+      verifyResult: log.verifyResult,
+      captchaDetails: log.captchaDetails
+    },
+    ai: {
+      aiMeta: log.aiMeta
+    }
+  };
+  for (const [name, data] of Object.entries(panes)) {
+    const pane = document.querySelector(`.modal-pane[data-pane="${name}"]`);
+    if (pane) pane.innerHTML = renderKv(data);
+  }
+  // Log tab is a preformatted stream, not a KV grid
+  const logPane = document.querySelector('.modal-pane[data-pane="log"]');
+  if (logPane) {
+    const lines = Array.isArray(log.logEntries) ? log.logEntries : [];
+    logPane.innerHTML = lines.length > 0
+      ? `<pre class="failure-log">${escapeHtml(lines.join('\n'))}</pre>`
+      : `<div class="kv-empty">${escapeHtml(t('failure.noData'))}</div>`;
+  }
+}
+
+async function openFailureModal(backlinkId) {
+  const all = await getAllRecords(STORES.FAILURE_LOGS);
+  failureModalLogs = all
+    .filter(r => r.backlinkId === backlinkId)
+    .sort((a, b) => (b.loggedAt || '').localeCompare(a.loggedAt || ''));
+  if (failureModalLogs.length === 0) {
+    alert(t('failure.noData'));
+    return;
+  }
+  const select = document.getElementById('failure-attempt-select');
+  select.innerHTML = failureModalLogs.map((log, i) =>
+    `<option value="${i}">${escapeHtml(log.loggedAt || '')} — ${escapeHtml(log.failureType || '-')}${log.siteProfile ? ' @ ' + escapeHtml(log.siteProfile) : ''}</option>`
+  ).join('');
+  renderFailurePanes(failureModalLogs[0]);
+  // Reset to the Summary pane so the user sees the highest-signal view first.
+  document.querySelectorAll('.modal-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === 'summary'));
+  document.querySelectorAll('.modal-pane').forEach(p => p.classList.toggle('active', p.dataset.pane === 'summary'));
+  document.getElementById('failure-modal').hidden = false;
+}
+
+function closeFailureModal() {
+  document.getElementById('failure-modal').hidden = true;
+  failureModalLogs = [];
+}
+
+document.getElementById('btn-close-failure-modal')?.addEventListener('click', closeFailureModal);
+document.getElementById('failure-modal-overlay')?.addEventListener('click', closeFailureModal);
+document.getElementById('failure-attempt-select')?.addEventListener('change', (e) => {
+  const log = failureModalLogs[parseInt(e.target.value)];
+  if (log) renderFailurePanes(log);
+});
+document.querySelectorAll('.modal-tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const tab = btn.dataset.tab;
+    document.querySelectorAll('.modal-tab').forEach(b => b.classList.toggle('active', b === btn));
+    document.querySelectorAll('.modal-pane').forEach(p => p.classList.toggle('active', p.dataset.pane === tab));
+  });
+});
+
 document.getElementById('btn-export-failures').addEventListener('click', async () => {
   const logs = await getAllRecords(STORES.FAILURE_LOGS);
   if (logs.length === 0) {

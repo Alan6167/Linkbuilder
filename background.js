@@ -163,6 +163,30 @@ const messageHandlers = {
     } catch (err) {
       return { found: false, error: err.message };
     }
+  },
+
+  // Optional diagnostic helper. Only invoked when the captureFormSnippet
+  // setting is on, and only for failing attempts. Returns up to 500 chars of
+  // outerHTML around the comment form so post-mortem investigators can see
+  // what the form really looked like at failure time.
+  async captureFormSnippet({ tabId, frameId }) {
+    try {
+      const target = { tabId };
+      if (frameId != null && frameId !== 0) target.frameIds = [frameId];
+      else target.allFrames = false;
+      const results = await chrome.scripting.executeScript({
+        target,
+        func: () => {
+          const form = document.querySelector('#commentform, .comment-form, form[action*="comment"]');
+          if (!form) return null;
+          const html = form.outerHTML || '';
+          return html.slice(0, 500);
+        }
+      });
+      return { snippet: results?.[0]?.result || null };
+    } catch (err) {
+      return { snippet: null, error: err.message };
+    }
   }
 };
 

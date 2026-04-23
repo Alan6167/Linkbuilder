@@ -431,6 +431,11 @@
               <input type="file" id="import-sites-input" accept=".json" hidden>
             </div>
 
+            <div class="form-group">
+              <label><input type="checkbox" id="setting-capture-form-snippet"> <span data-i18n="settings.captureFormSnippet">失败时采集表单 HTML 片段（调试用）</span></label>
+              <p class="hint" data-i18n="settings.captureFormSnippetHint">默认关闭。开启后失败日志会包含表单附近的 HTML 片段（≤500 字符），可能含站点 nonce，仅本地存储。</p>
+            </div>
+
             <div id="failure-summary" class="failure-summary" hidden>
               <h4 data-i18n="settings.failureSummary">失败类型统计</h4>
               <div id="failure-counts"></div>
@@ -483,6 +488,36 @@
             </div>
           </div>
         </details>
+      </div>
+    </div>
+  </div>
+
+  <!-- Failure details modal: shown when user clicks the "Details" button on a failed row -->
+  <div id="failure-modal" class="modal" hidden>
+    <div class="modal-overlay" id="failure-modal-overlay"></div>
+    <div class="modal-body">
+      <div class="modal-header">
+        <h3 data-i18n="failure.details">失败详情</h3>
+        <button id="btn-close-failure-modal" class="btn btn-small" aria-label="Close">×</button>
+      </div>
+      <div class="modal-toolbar">
+        <select id="failure-attempt-select"></select>
+      </div>
+      <div class="modal-tabs">
+        <button class="modal-tab active" data-tab="summary" data-i18n="failure.tabSummary">概要</button>
+        <button class="modal-tab" data-tab="form" data-i18n="failure.tabForm">表单</button>
+        <button class="modal-tab" data-tab="page" data-i18n="failure.tabPage">页面</button>
+        <button class="modal-tab" data-tab="verify" data-i18n="failure.tabVerify">验证</button>
+        <button class="modal-tab" data-tab="ai" data-i18n="failure.tabAI">AI</button>
+        <button class="modal-tab" data-tab="log" data-i18n="failure.tabLog">日志</button>
+      </div>
+      <div class="modal-content">
+        <div class="modal-pane active" data-pane="summary"></div>
+        <div class="modal-pane" data-pane="form"></div>
+        <div class="modal-pane" data-pane="page"></div>
+        <div class="modal-pane" data-pane="verify"></div>
+        <div class="modal-pane" data-pane="ai"></div>
+        <div class="modal-pane" data-pane="log"></div>
       </div>
     </div>
   </div>

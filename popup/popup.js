@@ -60,7 +60,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
 
     if (tab.dataset.tab === 'backlinks') loadBacklinksList();
-    if (tab.dataset.tab === 'publish') { loadSiteProfiles(); checkResumeTask(); }
+    if (tab.dataset.tab === 'publish') { loadSiteProfiles(); checkResumeTask(); refreshCursorProgress(); }
     if (tab.dataset.tab === 'settings') loadSettings();
   });
 });
@@ -1143,17 +1143,44 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
     const hForBl = history.get(bl.id);
     return selectedKeys.some(({ key }) => shouldPublish(hForBl, key));         // B
   });
-  if (maxPages > 0 && commentable.length > maxPages) {
-    commentable = commentable.slice(0, maxPages);
+
+  // Batch cursor: skip already-attempted ids. Ensures successive batches of
+  // size N move through the list instead of re-picking the same front slice.
+  const cursor = await getPublishCursor();
+  const attemptedSet = new Set(cursor.attempted || []);
+  let remaining = commentable.filter(bl => !attemptedSet.has(bl.id));
+  if (remaining.length === 0 && commentable.length > 0) {
+    if (!confirm(t('publish.cursorExhaustedConfirm'))) return;
+    await resetPublishCursor();
+    remaining = commentable;
   }
 
-  if (commentable.length === 0) {
+  let batch = remaining;
+  if (maxPages > 0 && batch.length > maxPages) {
+    batch = batch.slice(0, maxPages);
+  }
+
+  if (batch.length === 0) {
     alert(t('publish.noCommentable'));
     return;
   }
 
+  // Preview: show the first few titles so the user knows what's about to run.
+  const previewTitles = batch.slice(0, 3).map(b => b.sourceTitle || b.sourceDomain || '').filter(Boolean);
+  const previewExtra = batch.length > previewTitles.length ? '…' : '';
+  const previewMsg = t('publish.cursorPreview', {
+    titles: previewTitles.join('、') + previewExtra,
+    count: batch.length
+  });
+  if (!confirm(previewMsg)) return;
+
+  // Advance the cursor up-front: once we enter runPublishLoop, these ids are
+  // "attempted" even if the user stops mid-run. This matches the common
+  // expectation that "next batch" should move forward, not re-try the same N.
+  await appendPublishCursor(batch.map(b => b.id));
+
   await runPublishLoop({
-    backlinkIds: commentable.map(b => b.id),
+    backlinkIds: batch.map(b => b.id),
     selectedSites,
     mode,
     delay,
@@ -1161,6 +1188,55 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
     startSiteIndex: 0,
     initialStats: { confirmed: 0, moderation: 0, failed: 0, captcha: 0 }
   });
+});
+
+// ========== Publish batch cursor (next-unattempted mode) ==========
+// Tracks which backlink ids have been attempted so successive "Start publish"
+// clicks naturally move past the already-tried entries instead of re-scanning
+// from the top of the list. Cleared by the user via "reset batch progress".
+async function getPublishCursor() {
+  return (await getSetting('publishCursor')) || { attempted: [], lastBatchIds: [], lastBatchAt: null };
+}
+
+async function appendPublishCursor(ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return;
+  const cursor = await getPublishCursor();
+  const merged = new Set(cursor.attempted);
+  for (const id of ids) if (Number.isFinite(id)) merged.add(id);
+  cursor.attempted = [...merged];
+  cursor.lastBatchIds = ids.slice();
+  cursor.lastBatchAt = new Date().toISOString();
+  await setSetting('publishCursor', cursor);
+}
+
+async function resetPublishCursor() {
+  await setSetting('publishCursor', { attempted: [], lastBatchIds: [], lastBatchAt: null });
+}
+
+// Refresh the "X attempted / Y candidates" hint next to the publish form.
+// Candidates count here mirrors the filter applied in the start-publish handler:
+// excludes PAGE_BLOCKER_STATUSES. Site-level shouldPublish check is omitted
+// because the hint is shown independent of site selection — it's a coarse guide.
+async function refreshCursorProgress() {
+  const el = document.getElementById('pub-cursor-progress');
+  if (!el) return;
+  try {
+    const [backlinks, cursor] = await Promise.all([
+      getAllRecords(STORES.BACKLINKS),
+      getPublishCursor()
+    ]);
+    const total = backlinks.filter(bl => !PAGE_BLOCKER_STATUSES.has(bl.status)).length;
+    const attempted = (cursor.attempted || []).length;
+    el.textContent = t('publish.cursorProgress', { attempted, total });
+  } catch {
+    el.textContent = '';
+  }
+}
+
+document.getElementById('btn-reset-cursor')?.addEventListener('click', async () => {
+  if (!confirm(t('publish.resetCursorConfirm'))) return;
+  await resetPublishCursor();
+  await refreshCursorProgress();
 });
 
 // ========== Publish task state (for resume) ==========
@@ -1825,6 +1901,9 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
     failed: pubStats.failed,
     captcha: pubStats.captcha
   }), pubStats.failed > 0 ? 'error' : 'success');
+  // Refresh the cursor progress hint so the user immediately sees that this
+  // run advanced the cursor (and "next batch" will pick different entries).
+  refreshCursorProgress();
 }
 
 // Classify failure type for analysis. When a concrete status (e.g. 'submit_failed',
@@ -2216,4 +2295,5 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadPublishSelection();
   await loadSiteProfiles();
   checkResumeTask();
+  refreshCursorProgress();
 });

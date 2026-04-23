@@ -2308,6 +2308,10 @@ async function loadSettings() {
   const captureSnippet = await getSetting('captureFormSnippet');
   document.getElementById('setting-capture-form-snippet').checked = captureSnippet === true;
 
+  // Failure log export redaction (default ON for privacy)
+  const redact = await getSetting('redactFailureLogsOnExport');
+  document.getElementById('setting-redact-failures').checked = redact !== false;
+
   // Auto-skip & timeout settings
   const autoSkip = await getSetting('autoSkipDomainAfterN');
   document.getElementById('setting-auto-skip').value = Number.isFinite(autoSkip) ? autoSkip : 0;
@@ -2358,6 +2362,10 @@ document.getElementById('setting-skip-library')?.addEventListener('change', asyn
 
 document.getElementById('setting-capture-form-snippet')?.addEventListener('change', async (e) => {
   await setSetting('captureFormSnippet', e.target.checked);
+});
+
+document.getElementById('setting-redact-failures')?.addEventListener('change', async (e) => {
+  await setSetting('redactFailureLogsOnExport', e.target.checked);
 });
 
 document.getElementById('setting-auto-skip')?.addEventListener('change', async (e) => {
@@ -2684,19 +2692,72 @@ document.querySelectorAll('.modal-tab').forEach(btn => {
   });
 });
 
+// Strip likely-PII / fingerprintable fields from a FAILURE_LOGS row before
+// it leaves the user's machine. Default-on toggle in Settings; users can
+// opt out for local debugging where the full record is needed.
+//
+// Redactions:
+// - sourceUrl / formAnalysis.action: drop query string + fragment (utm_*,
+//   session ids, comment tokens often live there).
+// - sourceTitle: truncate hard, may contain article author name.
+// - siteProfile: drop entirely (it is the user's chosen profile name).
+// - errorMessage: collapse email-like substrings.
+// - logEntries: drop entirely (ring buffer of UI lines, may quote URLs).
+// - formHtmlSnippet: drop entirely (CSRF nonces, embedded user data).
+// - aiMeta is kept (whitelist fields only by construction).
+function redactFailureLog(log) {
+  const stripQuery = (u) => {
+    if (typeof u !== 'string' || !u) return u;
+    try {
+      const parsed = new URL(u);
+      parsed.search = '';
+      parsed.hash = '';
+      return parsed.toString();
+    } catch { return u.split('?')[0].split('#')[0]; }
+  };
+  const scrubEmail = (s) =>
+    typeof s === 'string'
+      ? s.replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '<email>')
+      : s;
+  const out = { ...log };
+  if (out.sourceUrl) out.sourceUrl = stripQuery(out.sourceUrl);
+  if (out.sourceTitle) out.sourceTitle = String(out.sourceTitle).slice(0, 60);
+  if (out.siteProfile) out.siteProfile = '<redacted>';
+  if (out.errorMessage) out.errorMessage = scrubEmail(out.errorMessage);
+  if (out.errorStack) out.errorStack = scrubEmail(out.errorStack);
+  delete out.logEntries;
+  delete out.formHtmlSnippet;
+  if (out.formAnalysis && typeof out.formAnalysis === 'object') {
+    const fa = { ...out.formAnalysis };
+    if (fa.action) fa.action = stripQuery(fa.action);
+    out.formAnalysis = fa;
+  }
+  if (out.verifyResult && typeof out.verifyResult === 'object') {
+    const vr = { ...out.verifyResult };
+    if (vr.pageTitle) vr.pageTitle = String(vr.pageTitle).slice(0, 60);
+    out.verifyResult = vr;
+  }
+  return out;
+}
+
 document.getElementById('btn-export-failures').addEventListener('click', async () => {
   const logs = await getAllRecords(STORES.FAILURE_LOGS);
   if (logs.length === 0) {
     alert(t('common.noData'));
     return;
   }
-  // Export as JSON for full detail (including formAnalysis)
-  const json = JSON.stringify(logs, null, 2);
+  // Default to redacted export. Users who explicitly need raw diagnostics
+  // (only useful for the very person who ran the publish) can flip the
+  // setting off — surfaced near the export button so the choice is explicit.
+  const redact = (await getSetting('redactFailureLogsOnExport')) !== false;
+  const payload = redact ? logs.map(redactFailureLog) : logs;
+  const json = JSON.stringify(payload, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `linkbuilder-failures-${new Date().toISOString().slice(0, 10)}.json`;
+  const tag = redact ? 'redacted' : 'full';
+  a.download = `linkbuilder-failures-${tag}-${new Date().toISOString().slice(0, 10)}.json`;
   a.click();
   URL.revokeObjectURL(url);
 });

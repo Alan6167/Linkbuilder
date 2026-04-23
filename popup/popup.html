@@ -434,6 +434,10 @@
               <button id="btn-import-sites" class="btn btn-small" data-i18n="settings.importSites">导入网站配置</button>
               <button id="btn-export-failures" class="btn btn-small" data-i18n="settings.exportFailures">导出失败日志</button>
               <button id="btn-clear-failures" class="btn btn-small" data-i18n="settings.clearFailures">清除失败日志</button>
+              <label class="inline-check">
+                <input type="checkbox" id="setting-redact-failures" checked>
+                <span data-i18n="settings.redactFailuresOnExport">导出时脱敏</span>
+              </label>
               <button id="btn-clear-data" class="btn btn-small btn-danger" data-i18n="settings.clearData">清除所有数据</button>
               <input type="file" id="import-sites-input" accept=".json" hidden>
             </div>

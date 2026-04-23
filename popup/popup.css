@@ -756,6 +756,18 @@ hr {
   overflow-y: auto;
 }
 
+.pub-sites-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.pub-sites-actions {
+  display: flex;
+  gap: 6px;
+}
+
 .checkbox-list label {
   display: flex;
   align-items: center;

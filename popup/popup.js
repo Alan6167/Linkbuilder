@@ -11,6 +11,33 @@ const PAGE_SIZE = 20;
 let analyzeRunning = false;
 let publishRunning = false;
 
+// Persisted set of siteKeyOf(profile) values selected for publishing.
+// Survives tab switches, side-panel reopen (via chrome.storage.session),
+// and browser restart (via SETTINGS store fallback).
+let publishSelectedKeys = new Set();
+
+async function loadPublishSelection() {
+  try {
+    if (chrome?.storage?.session) {
+      const got = await chrome.storage.session.get('publishSelectedKeys');
+      if (Array.isArray(got?.publishSelectedKeys)) {
+        publishSelectedKeys = new Set(got.publishSelectedKeys);
+        return;
+      }
+    }
+  } catch {}
+  try {
+    const fallback = await getSetting('publishSelectedKeys');
+    if (Array.isArray(fallback)) publishSelectedKeys = new Set(fallback);
+  } catch {}
+}
+
+async function savePublishSelection() {
+  const arr = [...publishSelectedKeys];
+  try { await chrome?.storage?.session?.set?.({ publishSelectedKeys: arr }); } catch {}
+  try { await setSetting('publishSelectedKeys', arr); } catch {}
+}
+
 // ========== i18n ==========
 document.getElementById('lang-toggle').addEventListener('click', async () => {
   const newLang = getLanguage() === 'zh' ? 'en' : 'zh';
@@ -826,16 +853,57 @@ async function loadSiteProfiles() {
   const checkboxList = document.getElementById('pub-site-checkboxes');
   if (profiles.length === 0) {
     checkboxList.innerHTML = `<div class="empty-hint">${t('publish.noSites')}</div>`;
+    // Prune any stale selections and persist.
+    if (publishSelectedKeys.size > 0) {
+      publishSelectedKeys.clear();
+      await savePublishSelection();
+    }
     return;
   }
+
+  // Prune keys that no longer correspond to an existing profile (profile deleted/renamed).
+  const validKeys = new Set(profiles.map(p => siteKeyOf(p)).filter(Boolean));
+  let pruned = false;
+  for (const k of [...publishSelectedKeys]) {
+    if (!validKeys.has(k)) { publishSelectedKeys.delete(k); pruned = true; }
+  }
+
   checkboxList.innerHTML = profiles.map((p, i) => `
     <label title="${escapeHtml(p.siteDescription || '')}">
-      <input type="checkbox" name="pub-sites" value="${i}">
+      <input type="checkbox" name="pub-sites" value="${escapeHtml(siteKeyOf(p))}" data-idx="${i}">
       <span>${escapeHtml(p.profileName || p.name)}</span>
       <span class="site-url">${escapeHtml(p.website)}</span>
     </label>
   `).join('');
+
+  // Restore persisted checked state.
+  checkboxList.querySelectorAll('input[name="pub-sites"]').forEach(cb => {
+    cb.checked = publishSelectedKeys.has(cb.value);
+  });
+
+  if (pruned) await savePublishSelection();
 }
+
+// Event delegation: track checkbox changes on the publish site list.
+document.getElementById('pub-site-checkboxes').addEventListener('change', async (e) => {
+  const target = e.target;
+  if (!target || target.name !== 'pub-sites') return;
+  if (target.checked) publishSelectedKeys.add(target.value);
+  else publishSelectedKeys.delete(target.value);
+  await savePublishSelection();
+});
+
+document.getElementById('btn-pub-select-all')?.addEventListener('click', async () => {
+  const checkboxes = document.querySelectorAll('#pub-site-checkboxes input[name="pub-sites"]');
+  checkboxes.forEach(cb => { cb.checked = true; publishSelectedKeys.add(cb.value); });
+  await savePublishSelection();
+});
+
+document.getElementById('btn-pub-deselect-all')?.addEventListener('click', async () => {
+  const checkboxes = document.querySelectorAll('#pub-site-checkboxes input[name="pub-sites"]');
+  checkboxes.forEach(cb => { cb.checked = false; publishSelectedKeys.delete(cb.value); });
+  await savePublishSelection();
+});
 
 // Select a site profile
 document.getElementById('pub-site-select').addEventListener('change', async (e) => {
@@ -1025,8 +1093,17 @@ function getCommentConfig(detectedLinkFormat) {
 // Start publishing
 document.getElementById('btn-start-publish').addEventListener('click', async () => {
   const profiles = await getSiteProfiles();
-  const checked = [...document.querySelectorAll('input[name="pub-sites"]:checked')];
-  let selectedSites = checked.map(cb => profiles[parseInt(cb.value)]).filter(Boolean);
+  // Resolve selection by siteKey so that adding/removing profiles between
+  // tab switches does not corrupt the selection. Sync the Set from the DOM
+  // first (covers the case where the user toggled a box but for some reason
+  // the change listener did not fire, e.g., before the listener was wired).
+  const domChecked = [...document.querySelectorAll('#pub-site-checkboxes input[name="pub-sites"]:checked')].map(cb => cb.value);
+  if (domChecked.length > 0) {
+    publishSelectedKeys = new Set(domChecked);
+    await savePublishSelection();
+  }
+  const byKey = new Map(profiles.map(p => [siteKeyOf(p), p]));
+  let selectedSites = [...publishSelectedKeys].map(k => byKey.get(k)).filter(Boolean);
 
   if (selectedSites.length === 0) {
     alert(t('publish.noSitesSelected'));
@@ -1973,8 +2050,9 @@ async function getFilterConfig() {
 }
 
 // Initialize
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   loadSettings();
-  loadSiteProfiles();
+  await loadPublishSelection();
+  await loadSiteProfiles();
   checkResumeTask();
 });

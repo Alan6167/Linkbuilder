@@ -199,7 +199,13 @@
 
         <!-- Publish targets -->
         <div class="form-group">
-          <label data-i18n="publish.selectSites">选择要发布的网站</label>
+          <div class="pub-sites-header">
+            <label data-i18n="publish.selectSites">选择要发布的网站</label>
+            <div class="pub-sites-actions">
+              <button type="button" id="btn-pub-select-all" class="btn btn-small" data-i18n="publish.selectAll">全选</button>
+              <button type="button" id="btn-pub-deselect-all" class="btn btn-small" data-i18n="publish.deselectAll">全不选</button>
+            </div>
+          </div>
           <div id="pub-site-checkboxes" class="checkbox-list"></div>
         </div>
 

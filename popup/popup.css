@@ -781,6 +781,16 @@ hr {
   margin-top: 8px;
 }
 
+.page-blocked-icon {
+  font-size: 13px;
+  margin-right: 2px;
+  cursor: help;
+}
+
+.list-item-page-blocked {
+  border-left: 3px solid #c0392b;
+}
+
 /* Failure details modal */
 .modal {
   position: fixed;

@@ -487,9 +487,15 @@ async function loadBacklinksList() {
   const start = (currentPage - 1) * PAGE_SIZE;
   const pageItems = backlinks.slice(start, start + PAGE_SIZE);
 
+  // Statuses where the page itself prevents *any* profile from succeeding;
+  // the badge gets an extra pageblock decoration + tooltip so users see at
+  // a glance this isn't worth retrying with a different profile.
+  const PAGE_BLOCKED_DISPLAY = new Set(['not_commentable', 'requires_login', 'captcha_blocked']);
+
   list.innerHTML = pageItems.map(bl => {
     const group = getStatusGroup(bl.status);
     const dimClass = bl.status === 'not_commentable' ? ' list-item-dim' : '';
+    const pageBlocked = PAGE_BLOCKED_DISPLAY.has(bl.status);
 
     let extraInfo = '';
     // Codex 补丁：dfTag 始终初始化在分支之外
@@ -539,7 +545,9 @@ async function loadBacklinksList() {
     }
 
     const groupKey = 'backlinks.grp' + group.charAt(0).toUpperCase() + group.slice(1);
-    const statusTooltip = t('backlinks.tip_' + group);
+    const baseStatusTooltip = t('backlinks.tip_' + group);
+    const statusTooltip = pageBlocked ? `${t('backlinks.pageBlockedTip')} | ${baseStatusTooltip}` : baseStatusTooltip;
+    const pageBlockedPrefix = pageBlocked ? `<span class="page-blocked-icon" title="${t('backlinks.pageBlockedTip')}">🚫</span>` : '';
 
     const actions = [];
     if (['commented', 'pending_moderation', 'partial_published'].includes(bl.status)) {
@@ -554,9 +562,10 @@ async function loadBacklinksList() {
     actions.push(`<button class="btn-delete-bl btn btn-small" data-id="${bl.id}" title="${t('backlinks.tipDelete')}">x</button>`);
 
     return `
-    <div class="list-item${dimClass}" data-id="${bl.id}">
+    <div class="list-item${dimClass}${pageBlocked ? ' list-item-page-blocked' : ''}" data-id="${bl.id}">
       <div class="list-item-header">
         <input type="checkbox" class="list-item-checkbox bl-checkbox" data-id="${bl.id}">
+        ${pageBlockedPrefix}
         <span class="list-item-title" title="${escapeHtml(bl.sourceTitle)}">${escapeHtml(bl.sourceTitle || bl.sourceDomain)}</span>
         <span class="badge badge-${group}" title="${statusTooltip}">${t(groupKey)}</span>
         <a class="list-item-link" href="${escapeHtml(bl.sourceUrl)}" target="_blank" title="${t('backlinks.tipOpenLink')}">&#x1F517;</a>
@@ -1418,6 +1427,14 @@ async function clearTaskState() {
 async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPageIndex, startSiteIndex, initialStats }) {
   const apiKey = await getSetting('geminiApiKey');
 
+  // Every call to the loop gets a fresh UUID. Written into every COMMENTS
+  // and FAILURE_LOGS row produced in this run so later analysis can group
+  // records by the exact session that produced them (see plan §6a).
+  const publishRunId = (typeof crypto?.randomUUID === 'function')
+    ? crypto.randomUUID()
+    : `run-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  currentPublishRunId = publishRunId;
+
   // Load fresh backlinks from DB (status may have changed)
   const allBacklinks = await getAllRecords(STORES.BACKLINKS);
   const backlinkMap = new Map(allBacklinks.map(b => [b.id, b]));
@@ -1656,7 +1673,8 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
               siteProfile: site.profileName,
               siteKey,
               status: 'already_exists',
-              publishedAt: new Date().toISOString()
+              publishedAt: new Date().toISOString(),
+              publishRunId
             }]);
             if (!hForBl) {
               hForBl = new Map();
@@ -1938,7 +1956,8 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
             status: commentStatus,
             dofollow: bl._dofollowVerified,
             postedRel: bl._postedRel,
-            publishedAt: new Date().toISOString()
+            publishedAt: new Date().toISOString(),
+            publishRunId
           }]);
         }
 
@@ -1962,7 +1981,8 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           siteKey,
           status: 'error',
           errorMessage: err.message?.substring(0, 500),
-          publishedAt: new Date().toISOString()
+          publishedAt: new Date().toISOString(),
+          publishRunId
         }]);
 
         // Log detailed failure info for analysis
@@ -2103,6 +2123,10 @@ function classifyFailure(errorMessage, status) {
 const ATTEMPT_LOG_MAX = 30;
 let currentAttemptLog = [];
 let currentAttemptTimings = {};
+// Current publish-run identifier (UUID). Populated by runPublishLoop and
+// pulled into every FAILURE_LOGS and COMMENTS record so investigators can
+// group all rows produced by a single run.
+let currentPublishRunId = null;
 function resetAttemptDiagnostics() {
   currentAttemptLog = [];
   currentAttemptTimings = {};
@@ -2143,10 +2167,15 @@ async function writeFailureLog(bl, site, detail = {}) {
       status: detail.status || null,
       stage: 'publish',
       loggedAt: new Date().toISOString(),
+      publishRunId: currentPublishRunId,
       ...cleanDetail,
       ...(formHtmlSnippet ? { formHtmlSnippet } : {})
     };
     await addRecords(STORES.FAILURE_LOGS, [record]);
+    // Opportunistic retention enforcement: when a new log is written, trim
+    // the store down to the configured max. Cheap when we're already doing IO
+    // for this failure, avoids an unbounded DB growth over months of use.
+    try { await enforceFailureLogRetention(); } catch {}
   } catch (e) {
     // Never let diagnostic failures bubble up into the publish loop.
     console.warn('[writeFailureLog] failed:', e);
@@ -2468,6 +2497,29 @@ document.getElementById('import-sites-input').addEventListener('change', async (
 });
 
 // Export failure logs
+// ========== FAILURE_LOGS retention ==========
+// Keep the FAILURE_LOGS store from growing without bound. When the total row
+// count exceeds failureLogMaxCount (default 5000), we drop the oldest rows in
+// a single batch so we amortize the deletion cost instead of paying it on
+// every write.
+const FAILURE_LOG_DEFAULT_MAX = 5000;
+const FAILURE_LOG_TRIM_RATIO = 0.1; // drop oldest 10 % when over the cap
+
+async function enforceFailureLogRetention() {
+  const configured = parseInt(await getSetting('failureLogMaxCount'));
+  const max = Number.isFinite(configured) && configured > 0 ? configured : FAILURE_LOG_DEFAULT_MAX;
+  const total = await getRecordCount(STORES.FAILURE_LOGS);
+  if (total <= max) return;
+  // Fetch all, sort by loggedAt asc, and delete the first `excess` rows.
+  const all = await getAllRecords(STORES.FAILURE_LOGS);
+  all.sort((a, b) => (a.loggedAt || '').localeCompare(b.loggedAt || ''));
+  const excess = total - Math.floor(max * (1 - FAILURE_LOG_TRIM_RATIO));
+  const toDrop = all.slice(0, excess);
+  for (const r of toDrop) {
+    try { await deleteRecord(STORES.FAILURE_LOGS, r.id); } catch {}
+  }
+}
+
 // ========== Failure details modal ==========
 // Structured view of FAILURE_LOGS rows for a single backlink. Rendered
 // imperatively: we fetch all rows that match backlinkId, sort by loggedAt

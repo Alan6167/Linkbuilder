@@ -353,6 +353,10 @@
           <label data-i18n="settings.apiKey">API 密钥</label>
           <input type="password" id="setting-api-key" data-i18n-placeholder="settings.apiKeyPlaceholder" placeholder="输入你的 API 密钥">
           <p class="hint" id="api-key-hint" data-i18n="settings.apiKeyHintKie">从 kie.ai/api-key 获取密钥</p>
+          <div class="api-key-actions">
+            <label><input type="checkbox" id="setting-api-key-session-only"> <span data-i18n="settings.apiKeySessionOnly">仅在当前浏览器会话中保存（关闭浏览器后清除）</span></label>
+            <button type="button" id="btn-clear-api-key" class="btn btn-small btn-danger" data-i18n="settings.clearApiKey">清除密钥</button>
+          </div>
         </div>
 
         <!-- Filter rules (collapsible) -->

@@ -22,6 +22,44 @@ let publishRunning = false;
 // and browser restart (via SETTINGS store fallback).
 let publishSelectedKeys = new Set();
 
+// Gemini API key storage strategy.
+// When `apiKeySessionOnly` is on, the key lives in chrome.storage.session and
+// is wiped when the browser shuts down. When off (legacy default), it lives in
+// the SETTINGS IndexedDB store and persists across restarts. Reads always check
+// session first so a session value masks any stale IDB value during the same
+// browser run.
+async function getApiKey() {
+  try {
+    const got = await chrome?.storage?.session?.get?.('geminiApiKey');
+    if (got && typeof got.geminiApiKey === 'string' && got.geminiApiKey) {
+      return got.geminiApiKey;
+    }
+  } catch {}
+  const sessionOnly = (await getSetting('apiKeySessionOnly')) === true;
+  if (sessionOnly) return ''; // user opted out of disk persistence; nothing in session => no key
+  const idb = await getSetting('geminiApiKey');
+  return typeof idb === 'string' ? idb : '';
+}
+
+async function setApiKey(key) {
+  const trimmed = (key || '').trim();
+  const sessionOnly = (await getSetting('apiKeySessionOnly')) === true;
+  if (sessionOnly) {
+    // Make sure no plaintext copy lingers in IDB after the user opted into
+    // session-only storage.
+    try { await setSetting('geminiApiKey', ''); } catch {}
+    try { await chrome.storage.session.set({ geminiApiKey: trimmed }); } catch {}
+  } else {
+    await setSetting('geminiApiKey', trimmed);
+    try { await chrome.storage.session.remove('geminiApiKey'); } catch {}
+  }
+}
+
+async function clearApiKey() {
+  try { await setSetting('geminiApiKey', ''); } catch {}
+  try { await chrome.storage.session.remove('geminiApiKey'); } catch {}
+}
+
 async function loadPublishSelection() {
   try {
     if (chrome?.storage?.session) {
@@ -1274,7 +1312,7 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
   const delay = Math.max(5, parseInt(document.getElementById('pub-delay').value) || 30);
   const maxPages = parseInt(document.getElementById('pub-max-pages').value) || 0;
 
-  const apiKey = await getSetting('geminiApiKey');
+  const apiKey = await getApiKey();
   if (!apiKey) {
     alert(t('settings.noApiKey'));
     return;
@@ -1425,7 +1463,7 @@ async function clearTaskState() {
 
 // Core publish loop — used for both fresh start and resume
 async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPageIndex, startSiteIndex, initialStats }) {
-  const apiKey = await getSetting('geminiApiKey');
+  const apiKey = await getApiKey();
 
   // Every call to the loop gets a fresh UUID. Written into every COMMENTS
   // and FAILURE_LOGS row produced in this run so later analysis can group
@@ -2207,8 +2245,10 @@ async function loadSettings() {
   }
   updateApiKeyHint();
 
-  const apiKey = await getSetting('geminiApiKey');
+  const apiKey = await getApiKey();
   if (apiKey) document.getElementById('setting-api-key').value = apiKey;
+  // Restore the session-only toggle so the user sees their previous choice.
+  document.getElementById('setting-api-key-session-only').checked = (await getSetting('apiKeySessionOnly')) === true;
 
   // Language
   const lang = await getSetting('language');
@@ -2370,6 +2410,23 @@ document.getElementById('setting-api-provider').addEventListener('change', (e) =
   updateApiKeyHint();
 });
 
+// Toggling session-only mid-session: copy the existing key to the new store
+// and clear the old one, so the user does not have to re-paste the key just
+// to change where it is persisted.
+document.getElementById('setting-api-key-session-only')?.addEventListener('change', async (e) => {
+  const sessionOnly = e.target.checked;
+  // Read whatever key is currently effective (either store).
+  const existing = await getApiKey();
+  await setSetting('apiKeySessionOnly', sessionOnly);
+  if (existing) await setApiKey(existing);
+});
+
+document.getElementById('btn-clear-api-key')?.addEventListener('click', async () => {
+  if (!confirm(t('settings.clearApiKeyConfirm'))) return;
+  await clearApiKey();
+  document.getElementById('setting-api-key').value = '';
+});
+
 function updateApiKeyHint() {
   const provider = document.getElementById('setting-api-provider').value;
   const hint = document.getElementById('api-key-hint');
@@ -2385,7 +2442,10 @@ document.getElementById('btn-save-settings').addEventListener('click', async () 
   await setSetting('apiProvider', provider);
   setProvider(provider);
 
-  await setSetting('geminiApiKey', document.getElementById('setting-api-key').value.trim());
+  // Persist the session-only preference BEFORE writing the key so setApiKey
+  // routes the key to the correct store.
+  await setSetting('apiKeySessionOnly', document.getElementById('setting-api-key-session-only').checked);
+  await setApiKey(document.getElementById('setting-api-key').value);
 
   // Number settings
   await setSetting('minAscore', parseInt(document.getElementById('setting-min-ascore').value) || 1);

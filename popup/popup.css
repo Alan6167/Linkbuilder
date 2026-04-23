@@ -775,6 +775,12 @@ hr {
   gap: 8px;
 }
 
+.action-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .checkbox-list label {
   display: flex;
   align-items: center;

@@ -1,4 +1,10 @@
-import { STORES, addRecords, getAllRecords, updateRecord, deleteRecord, deleteCommentsByBacklinkId, clearStore, getRecordCount, getSetting, setSetting } from '../lib/db.js';
+import {
+  STORES, addRecords, getAllRecords, updateRecord, deleteRecord,
+  deleteCommentsByBacklinkId, clearStore, getRecordCount,
+  getSetting, setSetting, normalizeUrl,
+  addToBlacklist, getBlacklist, removeFromBlacklist, clearBlacklist,
+  addToLibrary, getLibrary, removeFromLibrary, clearLibrary
+} from '../lib/db.js';
 import { parseRow, filterBacklinks, getFilterStats, DEFAULT_FILTER_CONFIG } from '../lib/filter.js';
 import { generateComment, setRateLimitCallback, formatLink, setProvider, getProvider, getLastAiMeta } from '../lib/gemini.js';
 import { t, setLanguage, getLanguage } from '../lib/i18n.js';
@@ -134,7 +140,16 @@ async function processFile(file) {
     progressText.textContent = t('import.applying');
 
     const config = await getFilterConfig();
-    filteredBacklinks = filterBacklinks(parsedBacklinks, config);
+    // Build blacklist + library sets once (normalized URL strings) so the
+    // filter rejects already-blocklisted / already-archived entries.
+    const [blacklistRecords, libraryRecords, skipLibrary] = await Promise.all([
+      getBlacklist(),
+      getLibrary(),
+      getSetting('skipLibraryOnImport')
+    ]);
+    const blacklistSet = new Set(blacklistRecords.map(r => r.sourceUrl));
+    const librarySet = (skipLibrary !== false) ? new Set(libraryRecords.map(r => r.sourceUrl)) : null;
+    filteredBacklinks = filterBacklinks(parsedBacklinks, config, blacklistSet, librarySet);
 
     progressFill.style.width = '100%';
     progressText.textContent = t('import.done');
@@ -199,17 +214,27 @@ document.getElementById('btn-add-urls').addEventListener('click', async () => {
     return;
   }
 
-  // Check for duplicates against existing backlinks
-  const existing = await getAllRecords(STORES.BACKLINKS);
+  // Check for duplicates against existing backlinks, URL blacklist, and the
+  // success library. A blacklisted or library-archived URL is silently skipped
+  // (counted under `skipped`) just like a dup — the UI just cares about how
+  // many rows ended up imported vs. discarded.
+  const [existing, blacklistRecords, libraryRecords, skipLibrary] = await Promise.all([
+    getAllRecords(STORES.BACKLINKS),
+    getBlacklist(),
+    getLibrary(),
+    getSetting('skipLibraryOnImport')
+  ]);
   const existingUrls = new Set(existing.map(b => b.sourceUrl));
+  const blacklistSet = new Set(blacklistRecords.map(r => r.sourceUrl));
+  const librarySet = (skipLibrary !== false) ? new Set(libraryRecords.map(r => r.sourceUrl)) : null;
 
   const newRecords = [];
   let skipped = 0;
   for (const url of validUrls) {
-    if (existingUrls.has(url)) {
-      skipped++;
-      continue;
-    }
+    if (existingUrls.has(url)) { skipped++; continue; }
+    const norm = normalizeUrl(url);
+    if (blacklistSet.has(norm)) { skipped++; continue; }
+    if (librarySet && librarySet.has(norm)) { skipped++; continue; }
     existingUrls.add(url);
     const domain = new URL(url).hostname;
     newRecords.push({
@@ -506,9 +531,11 @@ async function loadBacklinksList() {
     const actions = [];
     if (['commented', 'pending_moderation', 'partial_published'].includes(bl.status)) {
       actions.push(`<button class="btn-reverify btn btn-small" data-id="${bl.id}" data-url="${escapeHtml(bl.sourceUrl)}" title="${t('backlinks.tipReverify')}">${t('backlinks.reverify')}</button>`);
+      actions.push(`<button class="btn-save-library btn btn-small" data-id="${bl.id}" title="${t('backlinks.tipLibrary')}">+${t('backlinks.library')}</button>`);
     }
     if (['publish_failed', 'error', 'captcha_blocked', 'requires_login', 'not_commentable', 'partial_published'].includes(bl.status)) {
       actions.push(`<button class="btn-retry btn btn-small" data-id="${bl.id}" title="${t('backlinks.tipRetry')}">${t('backlinks.retry')}</button>`);
+      actions.push(`<button class="btn-blacklist-bl btn btn-small" data-id="${bl.id}" title="${t('backlinks.tipBlacklist')}">+${t('backlinks.blacklist')}</button>`);
     }
     actions.push(`<button class="btn-delete-bl btn btn-small" data-id="${bl.id}" title="${t('backlinks.tipDelete')}">x</button>`);
 
@@ -622,6 +649,38 @@ async function loadBacklinksList() {
     });
   });
 
+  list.querySelectorAll('.btn-blacklist-bl').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = parseInt(btn.dataset.id);
+      const all = await getAllRecords(STORES.BACKLINKS);
+      const bl = all.find(b => b.id === id);
+      if (!bl) return;
+      if (!confirm(t('backlinks.confirmBlacklist', { url: bl.sourceUrl }))) return;
+      await addToBlacklist(bl.sourceUrl, bl.status);
+      const deleteOnBlacklist = (await getSetting('deleteOnBlacklist')) !== false; // default true
+      if (deleteOnBlacklist) {
+        selectedIds.delete(id);
+        await deleteRecord(STORES.BACKLINKS, id);
+      }
+      await loadBacklinksList();
+    });
+  });
+
+  list.querySelectorAll('.btn-save-library').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = parseInt(btn.dataset.id);
+      const all = await getAllRecords(STORES.BACKLINKS);
+      const bl = all.find(b => b.id === id);
+      if (!bl) return;
+      await addToLibrary(bl);
+      btn.textContent = t('backlinks.savedToLibrary');
+      btn.disabled = true;
+      setTimeout(() => { btn.textContent = '+' + t('backlinks.library'); btn.disabled = false; }, 2000);
+    });
+  });
+
   // Checkbox change → update batch bar
   list.querySelectorAll('.bl-checkbox').forEach(cb => {
     const id = parseInt(cb.dataset.id);
@@ -731,6 +790,44 @@ document.getElementById('btn-batch-retry').addEventListener('click', async () =>
     }
   }
   selectedIds.clear();
+  await loadBacklinksList();
+});
+
+// Batch add failed backlinks to URL blacklist. Only entries whose status is in
+// the failed group are blacklisted; published/pending rows are skipped silently
+// so an accidental "select all" + batch-blacklist click can't archive success.
+document.getElementById('btn-batch-blacklist').addEventListener('click', async () => {
+  const ids = [...selectedIds];
+  if (ids.length === 0) return;
+  const allBl = await getAllRecords(STORES.BACKLINKS);
+  const FAILED = new Set(['publish_failed', 'error', 'captcha_blocked', 'requires_login', 'not_commentable', 'partial_published']);
+  const targets = ids.map(id => allBl.find(b => b.id === id)).filter(bl => bl && FAILED.has(bl.status));
+  if (targets.length === 0) { alert(t('backlinks.bulkBlacklistNoMatch')); return; }
+  if (!confirm(t('backlinks.bulkBlacklistConfirm', { count: targets.length }))) return;
+  const deleteOnBlacklist = (await getSetting('deleteOnBlacklist')) !== false;
+  for (const bl of targets) {
+    try { await addToBlacklist(bl.sourceUrl, bl.status); } catch {}
+    if (deleteOnBlacklist) { await deleteRecord(STORES.BACKLINKS, bl.id); }
+  }
+  selectedIds.clear();
+  await loadBacklinksList();
+});
+
+// Batch archive successful backlinks into the library. Mirror of the above:
+// only entries currently in the published group are archived.
+document.getElementById('btn-batch-library').addEventListener('click', async () => {
+  const ids = [...selectedIds];
+  if (ids.length === 0) return;
+  const allBl = await getAllRecords(STORES.BACKLINKS);
+  const PUBLISHED = new Set(['commented', 'pending_moderation', 'partial_published']);
+  const targets = ids.map(id => allBl.find(b => b.id === id)).filter(bl => bl && PUBLISHED.has(bl.status));
+  if (targets.length === 0) { alert(t('backlinks.bulkLibraryNoMatch')); return; }
+  let saved = 0;
+  for (const bl of targets) {
+    try { await addToLibrary(bl); saved++; } catch {}
+  }
+  selectedIds.clear();
+  alert(t('backlinks.bulkLibraryDone', { count: saved }));
   await loadBacklinksList();
 });
 
@@ -2041,8 +2138,73 @@ async function loadSettings() {
   document.getElementById('db-comments').textContent = await getRecordCount(STORES.COMMENTS);
   document.getElementById('db-sites').textContent = await getRecordCount(STORES.DISCOVERED_SITES);
 
+  // Blacklist / library settings
+  const deleteOnBl = await getSetting('deleteOnBlacklist');
+  document.getElementById('setting-delete-on-blacklist').checked = deleteOnBl !== false;
+  const skipLib = await getSetting('skipLibraryOnImport');
+  document.getElementById('setting-skip-library').checked = skipLib !== false;
+
+  await refreshBlacklistInfo();
+  await refreshLibraryInfo();
+
   await loadFailureSummary();
 }
+
+async function refreshBlacklistInfo() {
+  const el = document.getElementById('blacklist-info');
+  if (!el) return;
+  const records = await getBlacklist();
+  el.textContent = t('settings.listCount', { count: records.length });
+}
+
+async function refreshLibraryInfo() {
+  const el = document.getElementById('library-info');
+  if (!el) return;
+  const records = await getLibrary();
+  el.textContent = t('settings.listCount', { count: records.length });
+}
+
+function downloadJson(filename, data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+document.getElementById('setting-delete-on-blacklist')?.addEventListener('change', async (e) => {
+  await setSetting('deleteOnBlacklist', e.target.checked);
+});
+
+document.getElementById('setting-skip-library')?.addEventListener('change', async (e) => {
+  await setSetting('skipLibraryOnImport', e.target.checked);
+});
+
+document.getElementById('btn-export-blacklist')?.addEventListener('click', async () => {
+  const records = await getBlacklist();
+  downloadJson(`linkbuilder-blacklist-${new Date().toISOString().slice(0, 10)}.json`, records);
+});
+
+document.getElementById('btn-clear-blacklist')?.addEventListener('click', async () => {
+  if (!confirm(t('settings.clearListConfirm'))) return;
+  await clearBlacklist();
+  await refreshBlacklistInfo();
+});
+
+document.getElementById('btn-export-library')?.addEventListener('click', async () => {
+  const records = await getLibrary();
+  downloadJson(`linkbuilder-library-${new Date().toISOString().slice(0, 10)}.json`, records);
+});
+
+document.getElementById('btn-clear-library')?.addEventListener('click', async () => {
+  if (!confirm(t('settings.clearListConfirm'))) return;
+  await clearLibrary();
+  await refreshLibraryInfo();
+});
 
 // Provider change updates hint
 document.getElementById('setting-api-provider').addEventListener('change', (e) => {

@@ -127,6 +127,8 @@
           <span id="batch-count"></span>
           <button id="btn-batch-delete" class="btn btn-small btn-danger" data-i18n="backlinks.batchDelete">删除</button>
           <button id="btn-batch-retry" class="btn btn-small" data-i18n="backlinks.batchRetry">重试</button>
+          <button id="btn-batch-blacklist" class="btn btn-small" data-i18n="backlinks.bulkBlacklist">批量黑名单</button>
+          <button id="btn-batch-library" class="btn btn-small" data-i18n="backlinks.bulkSaveLibrary">批量存外链库</button>
         </div>
 
         <div id="backlinks-list" class="list">
@@ -446,6 +448,38 @@
                 <span class="stat-value" id="db-sites">0</span>
                 <span class="stat-label" data-i18n="settings.discovered">发现</span>
               </div>
+            </div>
+          </div>
+        </details>
+
+        <!-- URL Blacklist management -->
+        <details class="collapsible">
+          <summary data-i18n="settings.urlBlacklist">URL 黑名单</summary>
+          <div class="collapsible-body">
+            <p class="hint" data-i18n="settings.urlBlacklistHint">失败外链加入后，下次导入时会自动过滤匹配的 URL（URL 级，不是域名级）。</p>
+            <div class="form-group">
+              <label><input type="checkbox" id="setting-delete-on-blacklist" checked> <span data-i18n="settings.deleteOnBlacklist">加入黑名单后同时删除本地外链</span></label>
+            </div>
+            <div id="blacklist-info" class="hint"></div>
+            <div class="action-row">
+              <button id="btn-export-blacklist" class="btn btn-small" data-i18n="settings.exportList">导出 JSON</button>
+              <button id="btn-clear-blacklist" class="btn btn-small btn-danger" data-i18n="settings.clearList">清空</button>
+            </div>
+          </div>
+        </details>
+
+        <!-- Backlinks Library management -->
+        <details class="collapsible">
+          <summary data-i18n="settings.backlinksLibrary">外链库</summary>
+          <div class="collapsible-body">
+            <p class="hint" data-i18n="settings.backlinksLibraryHint">成功发布的外链可保存到库中。下次导入同一 URL 会被自动跳过。</p>
+            <div class="form-group">
+              <label><input type="checkbox" id="setting-skip-library" checked> <span data-i18n="settings.skipLibraryOnImport">导入时跳过外链库中的 URL</span></label>
+            </div>
+            <div id="library-info" class="hint"></div>
+            <div class="action-row">
+              <button id="btn-export-library" class="btn btn-small" data-i18n="settings.exportList">导出 JSON</button>
+              <button id="btn-clear-library" class="btn btn-small btn-danger" data-i18n="settings.clearList">清空</button>
             </div>
           </div>
         </details>

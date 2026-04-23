@@ -1262,6 +1262,17 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
       addLog(logEntries, t('common.error', { message: err.message }), 'error');
     }
 
+    // Snapshot the pageAnalysis into the shape we persist on failure. Keeping
+    // this narrow avoids leaking honeypot values or page text into logs.
+    const pageAnalysisSummary = pageAnalysis ? {
+      isWordPress: pageAnalysis.isWordPress,
+      wpKsesAllowsLinks: pageAnalysis.wpKsesAllowsLinks,
+      commentLinkRels: pageAnalysis.commentLinkRels,
+      blockers: pageAnalysis.blockers,
+      honeypotFields: pageAnalysis.honeypotFields?.length || 0,
+      captcha: pageAnalysis.captcha
+    } : null;
+
     if (pageAnalysis) {
       const fields = pageAnalysis.fields || {};
       if (!fields.comment) {
@@ -1270,6 +1281,12 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         bl.errorMessage = 'No comment textarea found on page';
         await updateRecord(STORES.BACKLINKS, bl);
         pubStats.failed++;
+        await writeFailureLog(bl, null, {
+          status: 'not_commentable',
+          errorMessage: bl.errorMessage,
+          pageAnalysis: pageAnalysisSummary,
+          logEntries: [...currentAttemptLog]
+        });
         continue;
       }
       const cap = pageAnalysis.captcha;
@@ -1279,6 +1296,13 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         bl.errorMessage = `CAPTCHA: ${cap.provider || cap.type}`;
         await updateRecord(STORES.BACKLINKS, bl);
         pubStats.captcha++;
+        await writeFailureLog(bl, null, {
+          status: 'captcha_blocked',
+          errorMessage: bl.errorMessage,
+          pageAnalysis: pageAnalysisSummary,
+          captchaDetails: { type: cap.type, provider: cap.provider || null, solved: false },
+          logEntries: [...currentAttemptLog]
+        });
         continue;
       }
       if (pageAnalysis.blockers?.includes('cleantalk') || pageAnalysis.blockers?.includes('jetpack_iframe')) {
@@ -1287,6 +1311,12 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         bl.errorMessage = `Blocker: ${pageAnalysis.blockers.join(', ')}`;
         await updateRecord(STORES.BACKLINKS, bl);
         pubStats.captcha++;
+        await writeFailureLog(bl, null, {
+          status: 'captcha_blocked',
+          errorMessage: bl.errorMessage,
+          pageAnalysis: pageAnalysisSummary,
+          logEntries: [...currentAttemptLog]
+        });
         continue;
       }
     }
@@ -1311,6 +1341,11 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         stats: pubStats,
         savedAt: new Date().toISOString()
       });
+
+      // Reset the per-attempt diagnostic state so each site gets its own
+      // log ring buffer and fresh timing breakdown attached to FAILURE_LOGS.
+      resetAttemptDiagnostics();
+      const attemptStartMs = performance.now();
 
       const site = selectedSites[s];
       const { name, email, website } = site;
@@ -1340,6 +1375,7 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
       try {
         addLog(logEntries, t('publish.opening', { url: bl.sourceUrl }), 'info');
 
+        const t0Analyze = performance.now();
         const result = await chrome.runtime.sendMessage({ type: 'analyzeUrl', url: bl.sourceUrl });
         tabId = result.tabId;
 
@@ -1356,6 +1392,7 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         freshAnalysis = await chrome.runtime.sendMessage({
           type: 'analyzePageViaContentScript', tabId
         }).catch(() => null) || bl.commentFormAnalysis || null;
+        currentAttemptTimings.analyzeMs = Math.round(performance.now() - t0Analyze);
 
         // C5: quick local DOM scan (all frames) instead of slow verifyComment preCheck
         const quickCheck = await chrome.runtime.sendMessage({
@@ -1439,6 +1476,7 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
 
         // Now we know the form is usable — call AI to generate comment
         addLog(logEntries, t('publish.generating'), 'info');
+        const t0Gen = performance.now();
         let commentText = await generateComment(apiKey, {
           title: pageInfo.title,
           content: pageInfo.contentExcerpt,
@@ -1448,6 +1486,7 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           myWebsiteUrl: website,
           siteDescription: site.siteDescription || ''
         }, commentConfig);
+        currentAttemptTimings.generateMs = Math.round(performance.now() - t0Gen);
 
         // Dofollow bypass: inject \n into href
         if (bypassActive) {
@@ -1462,9 +1501,11 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
 
         const formData = { name, email, website, comment: commentText };
         const honeypotFields = freshAnalysis?.honeypotFields || [];
+        const t0Fill = performance.now();
         const fillResult = await chrome.runtime.sendMessage({
           type: 'fillCommentForm', tabId, formData, fieldSelectors, frameId, honeypotFields
         });
+        currentAttemptTimings.fillMs = Math.round(performance.now() - t0Fill);
 
         if (!fillResult.success) {
           const details = Object.entries(fillResult.results || {})
@@ -1478,10 +1519,20 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         }), 'success');
 
         // Solve CAPTCHA if present (math or text type)
+        let captchaAttempt = null;
         if (captchaInfo && (captchaInfo.type === 'math' || captchaInfo.type === 'text')) {
+          const t0Cap = performance.now();
           const captchaResult = await chrome.runtime.sendMessage({
             type: 'solveCaptcha', tabId, captchaInfo, frameId
           });
+          currentAttemptTimings.captchaMs = Math.round(performance.now() - t0Cap);
+          captchaAttempt = {
+            type: captchaInfo.type,
+            provider: captchaInfo.provider || null,
+            extractedAnswer: captchaResult?.answer || null,
+            solved: !!captchaResult?.solved,
+            reason: captchaResult?.reason || null
+          };
           if (captchaResult.solved) {
             addLog(logEntries, t('publish.captchaSolved', { expr: captchaResult.type === 'math' ? captchaResult.answer : '', answer: captchaResult.answer }), 'success');
           } else {
@@ -1492,21 +1543,25 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         let commentStatus = 'unknown';
 
         if (mode === 'auto') {
+          const t0Submit = performance.now();
           const submitResult = await chrome.runtime.sendMessage({
             type: 'submitCommentForm',
             tabId,
             submitSelector: freshAnalysis?.submitButton || bl.commentFormAnalysis?.submitButton,
             frameId
           });
+          currentAttemptTimings.submitMs = Math.round(performance.now() - t0Submit);
 
           if (submitResult.success) {
             addLog(logEntries, t('publish.submitted'), 'success');
             addLog(logEntries, t('publish.verifying'), 'info');
+            const t0Verify = performance.now();
             const verification = await chrome.runtime.sendMessage({
               type: 'verifyComment', tabId,
               commentText: commentText.substring(0, 50),
               website
             });
+            currentAttemptTimings.verifyMs = Math.round(performance.now() - t0Verify);
 
             commentStatus = verification.status;
             const statusKey = `publish.verify_${commentStatus}`;
@@ -1533,6 +1588,16 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
               bl.status = 'captcha_blocked';
               bl.errorMessage = 'CAPTCHA could not be solved';
               await updateRecord(STORES.BACKLINKS, bl);
+              await writeFailureLog(bl, site, {
+                status: 'captcha_blocked',
+                errorMessage: bl.errorMessage,
+                pageAnalysis: pageAnalysisSummary,
+                formAnalysis: freshAnalysis || null,
+                verifyResult: verification,
+                captchaDetails: captchaAttempt,
+                timings: { ...currentAttemptTimings, totalMs: Math.round(performance.now() - attemptStartMs) },
+                logEntries: [...currentAttemptLog]
+              });
               if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
               tabId = null;
               break;
@@ -1544,16 +1609,47 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
               bl.status = 'requires_login';
               bl.errorMessage = 'Target page requires login';
               await updateRecord(STORES.BACKLINKS, bl);
+              await writeFailureLog(bl, site, {
+                status: 'requires_login',
+                errorMessage: bl.errorMessage,
+                pageAnalysis: pageAnalysisSummary,
+                formAnalysis: freshAnalysis || null,
+                verifyResult: verification,
+                timings: { ...currentAttemptTimings, totalMs: Math.round(performance.now() - attemptStartMs) },
+                logEntries: [...currentAttemptLog]
+              });
               if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
               tabId = null;
               break;
             }
-            else if (commentStatus === 'rejected') pubStats.failed++;
+            else if (commentStatus === 'rejected') {
+              pubStats.failed++;
+              await writeFailureLog(bl, site, {
+                status: 'rejected',
+                errorMessage: verification?.reason || 'Comment submission rejected',
+                pageAnalysis: pageAnalysisSummary,
+                formAnalysis: freshAnalysis || null,
+                verifyResult: verification,
+                captchaDetails: captchaAttempt,
+                timings: { ...currentAttemptTimings, totalMs: Math.round(performance.now() - attemptStartMs) },
+                logEntries: [...currentAttemptLog]
+              });
+            }
             else pubStats.moderation++;
           } else {
             addLog(logEntries, t('publish.submitFailed', { error: submitResult.error || 'unknown' }), 'error');
             commentStatus = 'submit_failed';
             pubStats.failed++;
+            await writeFailureLog(bl, site, {
+              status: 'submit_failed',
+              errorMessage: submitResult.error || 'submit_failed',
+              pageAnalysis: pageAnalysisSummary,
+              formAnalysis: freshAnalysis || null,
+              submitResult,
+              captchaDetails: captchaAttempt,
+              timings: { ...currentAttemptTimings, totalMs: Math.round(performance.now() - attemptStartMs) },
+              logEntries: [...currentAttemptLog]
+            });
           }
 
           if (tabId) await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
@@ -1605,26 +1701,14 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         }]);
 
         // Log detailed failure info for analysis
-        await addRecords(STORES.FAILURE_LOGS, [{
-          sourceUrl: bl.sourceUrl,
-          sourceDomain: bl.sourceDomain,
-          sourceTitle: bl.sourceTitle,
-          siteProfile: site.profileName,
-          failureType: classifyFailure(err.message),
+        await writeFailureLog(bl, site, {
           errorMessage: err.message,
           errorStack: err.stack?.split('\n').slice(0, 5).join('\n'),
-          stage: 'publish',
           formAnalysis: freshAnalysis || bl.commentFormAnalysis || null,
-          pageAnalysis: pageAnalysis ? {
-            isWordPress: pageAnalysis.isWordPress,
-            wpKsesAllowsLinks: pageAnalysis.wpKsesAllowsLinks,
-            commentLinkRels: pageAnalysis.commentLinkRels,
-            blockers: pageAnalysis.blockers,
-            honeypotFields: pageAnalysis.honeypotFields?.length || 0,
-            captcha: pageAnalysis.captcha
-          } : null,
-          loggedAt: new Date().toISOString()
-        }]);
+          pageAnalysis: pageAnalysisSummary,
+          timings: { ...currentAttemptTimings, totalMs: Math.round(performance.now() - attemptStartMs) },
+          logEntries: [...currentAttemptLog]
+        });
 
         if (tabId) {
           try { await chrome.runtime.sendMessage({ type: 'closeTab', tabId }); } catch {}
@@ -1715,8 +1799,18 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
   }), pubStats.failed > 0 ? 'error' : 'success');
 }
 
-// Classify failure type for analysis
-function classifyFailure(errorMessage) {
+// Classify failure type for analysis. When a concrete status (e.g. 'submit_failed',
+// 'rejected', 'captcha_blocked', 'requires_login', 'not_commentable') is known,
+// pass it as the second argument — it is returned verbatim so the two write
+// paths (soft-failure branches vs. throw catch block) stay consistent.
+function classifyFailure(errorMessage, status) {
+  const KNOWN_SOFT = new Set([
+    'submit_failed', 'rejected', 'captcha_blocked',
+    'requires_login', 'not_commentable'
+  ]);
+  if (status && (KNOWN_SOFT.has(status) || status.startsWith('captcha_') || status.startsWith('no_'))) {
+    return status;
+  }
   const msg = (errorMessage || '').toLowerCase();
   if (msg.includes('textarea not found') || msg.includes('no_selector')) return 'no_comment_field';
   if (msg.includes('not_found') || msg.includes('form not found')) return 'form_not_found';
@@ -1729,12 +1823,51 @@ function classifyFailure(errorMessage) {
   return 'other';
 }
 
+// Per-site-attempt diagnostic buffer. Reset at the top of each for-s iteration.
+// addLog() appends every UI log line here so we can snapshot the last 30 in
+// FAILURE_LOGS for post-mortem debugging.
+const ATTEMPT_LOG_MAX = 30;
+let currentAttemptLog = [];
+let currentAttemptTimings = {};
+function resetAttemptDiagnostics() {
+  currentAttemptLog = [];
+  currentAttemptTimings = {};
+}
+
+// Canonical writer for FAILURE_LOGS. Every failure path in the publish loop
+// — soft-failure branches and the throw catch alike — funnels through here so
+// the schema stays consistent (see docs/plan §B.1).
+async function writeFailureLog(bl, site, detail = {}) {
+  try {
+    const record = {
+      sourceUrl: bl?.sourceUrl || '',
+      sourceDomain: bl?.sourceDomain || '',
+      sourceTitle: bl?.sourceTitle || '',
+      siteProfile: site?.profileName || null,
+      backlinkId: bl?.id,
+      failureType: classifyFailure(detail.errorMessage, detail.status),
+      status: detail.status || null,
+      stage: 'publish',
+      loggedAt: new Date().toISOString(),
+      ...detail
+    };
+    await addRecords(STORES.FAILURE_LOGS, [record]);
+  } catch (e) {
+    // Never let diagnostic failures bubble up into the publish loop.
+    console.warn('[writeFailureLog] failed:', e);
+  }
+}
+
 function addLog(container, message, type = 'info') {
   const entry = document.createElement('div');
   entry.className = `log-entry ${type}`;
-  entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+  const line = `[${new Date().toLocaleTimeString()}] ${message}`;
+  entry.textContent = line;
   container.appendChild(entry);
   container.scrollTop = container.scrollHeight;
+  // Ring-buffer snapshot for the current attempt (drops oldest beyond the cap).
+  currentAttemptLog.push(line);
+  if (currentAttemptLog.length > ATTEMPT_LOG_MAX) currentAttemptLog.shift();
 }
 
 // ========== Settings Tab ==========

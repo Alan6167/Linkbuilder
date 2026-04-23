@@ -35,6 +35,18 @@ const messageHandlers = {
     const tab = await chrome.tabs.create({ url, active: false });
     // Wait for the tab to finish loading (timeout configurable via Settings)
     await waitForTabLoad(tab.id, await pageLoadTimeoutMs());
+    // Inject analyzer.js on demand instead of via auto-inject content_scripts.
+    // This keeps the extension off every page the user visits and only
+    // installs the message listeners on tabs we deliberately opened. Errors
+    // are swallowed because some pages (chrome://, file:// without permission)
+    // are simply not injectable, and the caller already handles missing
+    // sendMessage targets.
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id, allFrames: false },
+        files: ['content/analyzer.js']
+      });
+    } catch { /* page not injectable; downstream sendMessage will fail gracefully */ }
     return { tabId: tab.id };
   },
 

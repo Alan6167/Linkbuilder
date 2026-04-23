@@ -442,13 +442,26 @@ async function loadBacklinksList() {
     backlinks = backlinks.filter(b => statuses.includes(b.status));
   }
 
-  // Apply search
+  // Apply search (URL / domain / title / anchor — matching any of these is enough)
   const search = document.getElementById('bl-search').value.trim().toLowerCase();
   if (search) {
     backlinks = backlinks.filter(b =>
       (b.sourceUrl || '').toLowerCase().includes(search) ||
-      (b.sourceDomain || '').toLowerCase().includes(search)
+      (b.sourceDomain || '').toLowerCase().includes(search) ||
+      (b.sourceTitle || '').toLowerCase().includes(search) ||
+      (b.anchor || '').toLowerCase().includes(search)
     );
+  }
+
+  // Apply failureType filter (only shown for the "failed" chip). Pull from
+  // FAILURE_LOGS and keep only backlinks that have at least one log of the
+  // chosen failureType.
+  const ftypeEl = document.getElementById('bl-failure-type');
+  const ftype = ftypeEl && !ftypeEl.hidden ? ftypeEl.value : '';
+  if (ftype) {
+    const logs = await getAllRecords(STORES.FAILURE_LOGS);
+    const matchedIds = new Set(logs.filter(l => l.failureType === ftype).map(l => l.backlinkId));
+    backlinks = backlinks.filter(b => matchedIds.has(b.id));
   }
 
   // Apply sort
@@ -716,13 +729,34 @@ async function loadBacklinksList() {
 
 // Status bar chip click
 document.querySelectorAll('.status-chip').forEach(chip => {
-  chip.addEventListener('click', () => {
+  chip.addEventListener('click', async () => {
     document.querySelectorAll('.status-chip').forEach(c => c.classList.remove('active'));
     chip.classList.add('active');
     currentFilter = chip.dataset.filter;
     currentPage = 1;
+    // The failureType select is only useful when viewing the "failed" group.
+    // Populate it with the distinct failureTypes present in FAILURE_LOGS so
+    // the options reflect what actually exists, not a hard-coded enum.
+    const ftypeEl = document.getElementById('bl-failure-type');
+    if (ftypeEl) {
+      if (currentFilter === 'failed') {
+        const logs = await getAllRecords(STORES.FAILURE_LOGS);
+        const distinct = [...new Set(logs.map(l => l.failureType).filter(Boolean))].sort();
+        ftypeEl.innerHTML = `<option value="">${escapeHtml(t('backlinks.allFailureTypes'))}</option>` +
+          distinct.map(ft => `<option value="${escapeHtml(ft)}">${escapeHtml(ft)}</option>`).join('');
+        ftypeEl.hidden = false;
+      } else {
+        ftypeEl.hidden = true;
+        ftypeEl.value = '';
+      }
+    }
     loadBacklinksList();
   });
+});
+
+document.getElementById('bl-failure-type')?.addEventListener('change', () => {
+  currentPage = 1;
+  loadBacklinksList();
 });
 
 // Search input
@@ -1249,6 +1283,28 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
     const hForBl = history.get(bl.id);
     return selectedKeys.some(({ key }) => shouldPublish(hForBl, key));         // B
   });
+
+  // Auto-skip by domain: if a domain has >= N consecutive failures since the
+  // optional reset cutoff, hide every backlink from that domain from the
+  // batch so the queue moves past known-dead targets instead of wasting time.
+  const autoSkipN = parseInt(await getSetting('autoSkipDomainAfterN')) || 0;
+  if (autoSkipN > 0) {
+    const resetAt = await getSetting('autoSkipResetAt');
+    const allLogs = await getAllRecords(STORES.FAILURE_LOGS);
+    const logsByDomain = new Map();
+    for (const log of allLogs) {
+      if (resetAt && (log.loggedAt || '') < resetAt) continue;
+      const d = log.sourceDomain;
+      if (!d) continue;
+      if (!logsByDomain.has(d)) logsByDomain.set(d, 0);
+      logsByDomain.set(d, logsByDomain.get(d) + 1);
+    }
+    const skippedDomains = new Set();
+    for (const [d, count] of logsByDomain) if (count >= autoSkipN) skippedDomains.add(d);
+    if (skippedDomains.size > 0) {
+      commentable = commentable.filter(bl => !skippedDomains.has(bl.sourceDomain));
+    }
+  }
 
   // Batch cursor: skip already-attempted ids. Ensures successive batches of
   // size N move through the list instead of re-picking the same front slice.
@@ -2183,6 +2239,14 @@ async function loadSettings() {
   const captureSnippet = await getSetting('captureFormSnippet');
   document.getElementById('setting-capture-form-snippet').checked = captureSnippet === true;
 
+  // Auto-skip & timeout settings
+  const autoSkip = await getSetting('autoSkipDomainAfterN');
+  document.getElementById('setting-auto-skip').value = Number.isFinite(autoSkip) ? autoSkip : 0;
+  const pageLoad = await getSetting('pageLoadTimeoutMs');
+  document.getElementById('setting-page-load-timeout').value = Number.isFinite(pageLoad) ? pageLoad : 30000;
+  const submitTO = await getSetting('submitVerifyTimeoutMs');
+  document.getElementById('setting-submit-verify-timeout').value = Number.isFinite(submitTO) ? submitTO : 15000;
+
   await refreshBlacklistInfo();
   await refreshLibraryInfo();
 
@@ -2225,6 +2289,29 @@ document.getElementById('setting-skip-library')?.addEventListener('change', asyn
 
 document.getElementById('setting-capture-form-snippet')?.addEventListener('change', async (e) => {
   await setSetting('captureFormSnippet', e.target.checked);
+});
+
+document.getElementById('setting-auto-skip')?.addEventListener('change', async (e) => {
+  const n = parseInt(e.target.value);
+  await setSetting('autoSkipDomainAfterN', Number.isFinite(n) && n > 0 ? n : 0);
+});
+
+document.getElementById('setting-page-load-timeout')?.addEventListener('change', async (e) => {
+  const n = parseInt(e.target.value);
+  if (Number.isFinite(n) && n >= 5000) await setSetting('pageLoadTimeoutMs', n);
+});
+
+document.getElementById('setting-submit-verify-timeout')?.addEventListener('change', async (e) => {
+  const n = parseInt(e.target.value);
+  if (Number.isFinite(n) && n >= 3000) await setSetting('submitVerifyTimeoutMs', n);
+});
+
+// Reset the auto-skip cutoff. Records a timestamp so that subsequent
+// consecutive-failure checks only count FAILURE_LOGS newer than this mark.
+document.getElementById('btn-reset-auto-skip')?.addEventListener('click', async () => {
+  if (!confirm(t('settings.resetAutoSkipConfirm'))) return;
+  await setSetting('autoSkipResetAt', new Date().toISOString());
+  alert(t('settings.resetAutoSkipDone'));
 });
 
 document.getElementById('btn-export-blacklist')?.addEventListener('click', async () => {

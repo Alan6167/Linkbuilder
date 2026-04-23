@@ -115,6 +115,9 @@
             <option value="date_desc" data-i18n="backlinks.sortDateDesc">最新</option>
             <option value="domain" data-i18n="backlinks.sortDomain">域名</option>
           </select>
+          <select id="bl-failure-type" hidden data-i18n-title="backlinks.tipFailureType">
+            <option value="" data-i18n="backlinks.allFailureTypes">全部失败类型</option>
+          </select>
           <button id="btn-analyze-all" class="btn btn-small" data-i18n="backlinks.analyzeAll" data-i18n-title="backlinks.tipAnalyze">分析</button>
           <button id="btn-stop-analyze" class="btn btn-small btn-danger" hidden data-i18n="backlinks.stop">停止</button>
         </div>
@@ -434,6 +437,29 @@
             <div class="form-group">
               <label><input type="checkbox" id="setting-capture-form-snippet"> <span data-i18n="settings.captureFormSnippet">失败时采集表单 HTML 片段（调试用）</span></label>
               <p class="hint" data-i18n="settings.captureFormSnippetHint">默认关闭。开启后失败日志会包含表单附近的 HTML 片段（≤500 字符），可能含站点 nonce，仅本地存储。</p>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group form-half">
+                <label data-i18n="settings.autoSkipDomain">连续失败 N 次后跳过域名</label>
+                <input type="number" id="setting-auto-skip" value="0" min="0">
+                <p class="hint" data-i18n="settings.autoSkipHint">0 = 不自动跳过</p>
+              </div>
+              <div class="form-group form-half">
+                <label>&nbsp;</label>
+                <button id="btn-reset-auto-skip" class="btn btn-small" data-i18n="settings.resetAutoSkip">重置自动跳过</button>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group form-half">
+                <label data-i18n="settings.pageLoadTimeout">页面加载超时（毫秒）</label>
+                <input type="number" id="setting-page-load-timeout" value="30000" min="5000" step="1000">
+              </div>
+              <div class="form-group form-half">
+                <label data-i18n="settings.submitVerifyTimeout">提交/验证超时（毫秒）</label>
+                <input type="number" id="setting-submit-verify-timeout" value="15000" min="3000" step="1000">
+              </div>
             </div>
 
             <div id="failure-summary" class="failure-summary" hidden>

@@ -1,7 +1,21 @@
 // Background Service Worker for Linkbuilder
 
+import { getSetting } from './lib/db.js';
+
 // Click extension icon to open/close side panel
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+
+// Timeouts configurable via Settings. Reads each time to pick up live changes
+// without a service-worker restart; falls back to the prior hard-coded defaults
+// if unset so old behavior is preserved.
+async function pageLoadTimeoutMs() {
+  const v = await getSetting('pageLoadTimeoutMs');
+  return Number.isFinite(v) && v >= 5000 ? v : 15000;
+}
+async function submitVerifyTimeoutMs() {
+  const v = await getSetting('submitVerifyTimeoutMs');
+  return Number.isFinite(v) && v >= 3000 ? v : 12000;
+}
 
 // Message handler for communication between popup, content scripts, and background
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -19,8 +33,8 @@ const messageHandlers = {
   // Open a URL in a new tab and wait for it to finish loading
   async analyzeUrl({ url }) {
     const tab = await chrome.tabs.create({ url, active: false });
-    // Wait for the tab to finish loading
-    await waitForTabLoad(tab.id);
+    // Wait for the tab to finish loading (timeout configurable via Settings)
+    await waitForTabLoad(tab.id, await pageLoadTimeoutMs());
     return { tabId: tab.id };
   },
 
@@ -133,8 +147,9 @@ const messageHandlers = {
     await new Promise(resolve => setTimeout(resolve, 5000));
 
     // Now wait for the page to finish loading (reload/redirect after submit)
-    // Use a fresh check: listen for loading→complete transition
-    await waitForNavigation(tabId, 12000);
+    // Use a fresh check: listen for loading→complete transition. Timeout is
+    // configurable via Settings → submitVerifyTimeoutMs.
+    await waitForNavigation(tabId, await submitVerifyTimeoutMs());
 
     // Extra wait for dynamic content rendering
     await new Promise(resolve => setTimeout(resolve, 2000));

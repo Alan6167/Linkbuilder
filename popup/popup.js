@@ -1369,6 +1369,18 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
     return;
   }
 
+  // Validate the embedded link URL early so we don't start a run that will
+  // reject every iteration. Only when the user ticked "embed link" (otherwise
+  // linkUrl is unused) AND the explicit Link URL field was provided — if it's
+  // empty we fall back to the site profile's website in the loop, where the
+  // final value is re-validated per iteration.
+  const embedLinkChecked = document.getElementById('pub-embed-link').checked;
+  const rawLinkUrl = document.getElementById('pub-link-url').value.trim();
+  if (embedLinkChecked && rawLinkUrl && !validateHttpUrl(rawLinkUrl)) {
+    alert(t('publish.invalidLinkUrl'));
+    return;
+  }
+
   // C2: 双维度候选过滤
   // A. 页面级阻塞：bl.status ∉ PAGE_BLOCKER_STATUSES
   // B. 站点级覆盖：至少一个选中 siteKey 还需要发布（COMMENTS 里既无 hard-/soft-success，failCount < 上限，非 pending_review）
@@ -1841,6 +1853,20 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         const commentConfig = getCommentConfig(pageInfo.linkFormat);
         commentConfig.linkUrl = commentConfig.linkUrl || website;
 
+        // If the final URL we'd embed (explicit pub-link-url OR fallback to
+        // site profile website) isn't a valid http(s) URL, skip this site
+        // rather than posting a broken link. Counted as skipped (configuration
+        // issue — we never submitted) so the 7-bucket total stays consistent.
+        if (commentConfig.embedLink && !validateHttpUrl(commentConfig.linkUrl)) {
+          addLog(logEntries, t('publish.invalidLinkUrl'), 'error');
+          pubStats.skipped++;
+          if (tabId) {
+            try { await chrome.runtime.sendMessage({ type: 'closeTab', tabId }); } catch {}
+            tabId = null;
+          }
+          continue;
+        }
+
         fieldSelectors = (freshAnalysis && freshAnalysis.fields && Object.keys(freshAnalysis.fields).length > 0)
           ? freshAnalysis.fields
           : (bl.commentFormAnalysis?.fields || {});
@@ -1967,10 +1993,15 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
             addLog(logEntries, t('publish.submitted'), 'success');
             addLog(logEntries, t('publish.verifying'), 'info');
             const t0Verify = performance.now();
+            // Verify against the URL we actually embedded (pub-link-url OR
+            // site profile website as fallback), not just the profile website,
+            // so URL matching and rel classification operate on the right
+            // target when the user embeds a different link.
+            const verifyTarget = commentConfig.linkUrl || website;
             const verification = await chrome.runtime.sendMessage({
               type: 'verifyComment', tabId,
               commentText: commentText.substring(0, 50),
-              website
+              website: verifyTarget
             });
             currentAttemptTimings.verifyMs = Math.round(performance.now() - t0Verify);
             lastVerifyResult = verification;
@@ -2407,6 +2438,8 @@ async function loadSettings() {
   document.getElementById('setting-spam-keywords').value = Array.isArray(spamKw) ? spamKw.join('\n') : '';
   const blacklist = await getSetting('domainBlacklist');
   document.getElementById('setting-domain-blacklist').value = Array.isArray(blacklist) ? blacklist.join('\n') : '';
+  const whitelist = await getSetting('domainWhitelist');
+  document.getElementById('setting-domain-whitelist').value = Array.isArray(whitelist) ? whitelist.join('\n') : '';
 
   // DB stats
   document.getElementById('db-backlinks').textContent = await getRecordCount(STORES.BACKLINKS);
@@ -2591,6 +2624,7 @@ document.getElementById('btn-save-settings').addEventListener('click', async () 
   const parseLines = (val) => val.split('\n').map(s => s.trim()).filter(Boolean);
   await setSetting('customSpamKeywords', parseLines(document.getElementById('setting-spam-keywords').value));
   await setSetting('domainBlacklist', parseLines(document.getElementById('setting-domain-blacklist').value));
+  await setSetting('domainWhitelist', parseLines(document.getElementById('setting-domain-whitelist').value));
 
   // Text settings
   await setSetting('urlMustContain', document.getElementById('setting-url-must-contain').value.trim());
@@ -2961,7 +2995,7 @@ async function getFilterConfig() {
     'filterLostLinks', 'filterSpamDomains', 'nofollowFilter',
     'filterSitewide', 'filterSponsored',
     'prioritizeUgc', 'prioritizeBlogUrls', 'deduplicateByDomain',
-    'customSpamKeywords', 'domainBlacklist',
+    'customSpamKeywords', 'domainBlacklist', 'domainWhitelist',
     'urlMustContain', 'urlMustNotContain'
   ];
 

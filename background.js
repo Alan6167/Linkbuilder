@@ -98,15 +98,6 @@ const messageHandlers = {
     }
   },
 
-  // Get page HTML from a tab
-  async getPageHtml({ tabId }) {
-    const results = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => document.documentElement.outerHTML
-    });
-    return { html: results[0]?.result || '' };
-  },
-
   // Close a tab
   async closeTab({ tabId }) {
     try {
@@ -809,7 +800,6 @@ function verifyCommentOnPage(commentText, website) {
   const _return = origReturn;
 
   // URL-based instant detection
-  const instantPublish = currentUrl.includes('#comment-');
   if (currentUrl.includes('unapproved=')) {
     return _return({ verified: false, status: 'pending_moderation', reason: 'Comment awaiting moderation (unapproved in URL)', matchedPattern: 'url:unapproved' });
   }
@@ -826,17 +816,6 @@ function verifyCommentOnPage(commentText, website) {
     /审核后/,
     /your comment has been submitted/i,
     /thank you for your comment/i
-  ];
-
-  const captchaPatterns = [
-    /captcha/i,
-    /recaptcha/i,
-    /hcaptcha/i,
-    /verify you.*(human|not.*robot)/i,
-    /are you human/i,
-    /人机验证/,
-    /验证码/,
-    /turnstile/i
   ];
 
   const errorPatterns = [
@@ -878,17 +857,26 @@ function verifyCommentOnPage(commentText, website) {
     }
   }
 
+  // Locate the exact <a> the comment posted. We limit the scan to common
+  // comment-area containers (not document-wide) and compare host + path
+  // instead of raw string inclusion so trailing slashes, www prefix, and
+  // http<->https redirects all match. Rel classification runs on this exact
+  // anchor (not a header/sidebar link that happens to point at the same
+  // domain), producing a stable relCategory alongside the legacy dofollow
+  // boolean for backwards compatibility.
+  const matchedAnchor = website ? findPostedAnchor(website) : null;
+
   // Check if comment text snippet appears on page (first 50 chars)
   const snippet = commentText.substring(0, 50).trim();
   if (snippet && pageText.includes(snippet)) {
-    const dfResult = checkDofollow(website);
+    const dfResult = classifyAnchor(matchedAnchor);
     return _return({ verified: true, status: 'confirmed', reason: 'Comment text found on page', matchedPattern: 'snippet:body', ...dfResult });
   }
 
-  // Check if website URL appears in a new comment/link
-  if (website && pageHtml.includes(website)) {
-    const dfResult = checkDofollow(website);
-    return _return({ verified: true, status: 'confirmed', reason: 'Website link found on page', matchedPattern: 'website:html', ...dfResult });
+  // Check if website URL appears in a new comment/link via the anchor match
+  if (matchedAnchor) {
+    const dfResult = classifyAnchor(matchedAnchor);
+    return _return({ verified: true, status: 'confirmed', reason: 'Website link found on page', matchedPattern: 'website:anchor', ...dfResult });
   }
 
   // If form is gone and no errors, likely submitted successfully (moderation or redirect)
@@ -950,26 +938,60 @@ function verifyCommentOnPage(commentText, website) {
   // Form still exists - might mean nothing happened or page didn't reload
   return _return({ verified: false, status: 'unknown', reason: 'Could not verify - form still present', matchedPattern: 'fallthrough' });
 
-  // Dofollow verification: check rel attribute on the posted link
-  function checkDofollow(site) {
-    if (!site) return {};
+  // Resolve target URL to a host+path key (lowercase host, drop www, strip
+  // trailing slashes). Mirrors lib/db.js normalizeUrl's flexibility but stays
+  // inline because injected functions can't import helpers.
+  function urlKey(raw, base) {
     try {
-      const domain = new URL(site).hostname.replace('www.', '');
-      const link = document.querySelector(`a[href*="${domain}"]`);
-      if (!link) return {};
-
-      const rel = (link.getAttribute('rel') || '').trim().toLowerCase();
-      const parts = rel.split(/\s+/).filter(Boolean);
-      const hasNofollow = parts.includes('nofollow');
-      const hasUgc = parts.includes('ugc');
-
-      return {
-        dofollow: !hasNofollow && !hasUgc,
-        postedRel: rel || '(none)'
-      };
+      const u = new URL(raw, base);
+      const host = u.hostname.replace(/^www\./, '').toLowerCase();
+      const path = u.pathname.replace(/\/+$/, '') || '/';
+      return `${host}${path}`;
     } catch {
-      return {};
+      return '';
     }
+  }
+
+  // Walk the comment-area containers (NOT document-wide, to avoid matching
+  // header/sidebar links that happen to share the target's domain) and return
+  // the first anchor whose host+path matches the target URL.
+  function findPostedAnchor(targetRaw) {
+    const target = urlKey(targetRaw);
+    if (!target) return null;
+    const containers = document.querySelectorAll(
+      '.comment, .comments, .comment-list, #comments, article .comments, .wp-block-comments, ol.commentlist, ul.commentlist, .comments-area, [id*=comment]'
+    );
+    const scope = containers.length ? [...containers] : [document.body];
+    for (const root of scope) {
+      for (const a of root.querySelectorAll('a[href]')) {
+        const href = (a.getAttribute('href') || '').trim();
+        if (!href) continue;
+        if (urlKey(href, location.href) === target) return a;
+      }
+    }
+    return null;
+  }
+
+  // Classify the rel attribute on the posted anchor. Returns the legacy
+  // { dofollow, postedRel } plus a fine-grained relCategory so UI/stats can
+  // distinguish ugc / sponsored from nofollow instead of collapsing them.
+  function classifyAnchor(a) {
+    if (!a) return { dofollow: null, relCategory: 'unknown', postedRel: '(none)' };
+    const rel = (a.getAttribute('rel') || '').trim().toLowerCase();
+    const parts = rel.split(/\s+/).filter(Boolean);
+    const hasNofollow = parts.includes('nofollow');
+    const hasUgc = parts.includes('ugc');
+    const hasSponsored = parts.includes('sponsored');
+    let relCategory;
+    if (hasSponsored) relCategory = 'sponsored';
+    else if (hasUgc) relCategory = 'ugc';
+    else if (hasNofollow) relCategory = 'nofollow';
+    else relCategory = rel ? 'dofollow' : 'dofollow';  // no rel = dofollow by default
+    return {
+      dofollow: relCategory === 'dofollow',
+      relCategory,
+      postedRel: rel || '(none)'
+    };
   }
 }
 

@@ -1,6 +1,6 @@
 // Background Service Worker for Linkbuilder
 
-import { getSetting } from './lib/db.js';
+import { getSetting, normalizeUrl } from './lib/db.js';
 
 // Click extension icon to open/close side panel
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
@@ -72,11 +72,27 @@ const messageHandlers = {
     }
   },
 
-  // Extract comment links via content script
+  // Extract comment links from the main frame + every iframe (Jetpack
+  // embedded comment systems show up in child frames that sendMessage to the
+  // top-level handler can't reach). Results are merged and deduped by
+  // normalizeUrl so the same outgoing link in parent + child frames counts
+  // once.
   async extractLinksViaContentScript({ tabId }) {
     try {
-      const response = await chrome.tabs.sendMessage(tabId, { type: 'extractCommentLinks' });
-      return response;
+      const results = await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        func: extractCommentLinksInline
+      });
+      const all = results.flatMap(r => r.result || []);
+      const seen = new Set();
+      const merged = [];
+      for (const link of all) {
+        const key = normalizeUrl(link.url);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(link);
+      }
+      return { links: merged };
     } catch {
       return { links: [] };
     }
@@ -275,6 +291,46 @@ function waitForTabLoad(tabId, timeoutMs = 15000) {
       reject(new Error('Tab not found'));
     });
   });
+}
+
+// Injected into every frame of a tab to collect external comment-area links
+// for snowball discovery. Must be fully self-contained: no imports, closures,
+// or references to background-scope helpers. Returns [] on pages without a
+// recognizable comment container. Records are shaped to match what
+// popup.js expects for DISCOVERED_SITES.
+function extractCommentLinksInline() {
+  const commentSelectors = [
+    '.comment', '.comment-body', '#comments', '.comments-area',
+    '.comment-list', '.commentlist', 'ol.comments', 'ul.comments'
+  ];
+
+  let commentArea = null;
+  for (const sel of commentSelectors) {
+    commentArea = document.querySelector(sel);
+    if (commentArea) break;
+  }
+  if (!commentArea) return [];
+
+  const links = [];
+  const seenDomains = new Set();
+  for (const a of commentArea.querySelectorAll('a[href]')) {
+    try {
+      const url = new URL(a.href);
+      if (url.hostname === window.location.hostname) continue;
+      if (/facebook|twitter|google|youtube|instagram|linkedin/i.test(url.hostname)) continue;
+      if (!seenDomains.has(url.hostname)) {
+        seenDomains.add(url.hostname);
+        links.push({
+          url: a.href,
+          domain: url.hostname,
+          anchorText: a.textContent.trim(),
+          discoveredFrom: window.location.href,
+          discoveredAt: new Date().toISOString()
+        });
+      }
+    } catch { /* skip invalid URLs */ }
+  }
+  return links;
 }
 
 // Inline page analysis function — detects comment forms across various blog platforms

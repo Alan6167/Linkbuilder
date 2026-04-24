@@ -1009,6 +1009,15 @@ document.getElementById('btn-analyze-all').addEventListener('click', async () =>
 });
 
 // ========== Publish Tab - Site Profiles ==========
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function validateHttpUrl(s) {
+  try {
+    const u = new URL(s);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch { return false; }
+}
+
 async function getSiteProfiles() {
   return (await getSetting('siteProfiles')) || [];
 }
@@ -1138,6 +1147,15 @@ document.getElementById('btn-save-site').addEventListener('click', async () => {
 
   if (!name || !email || !website) {
     alert(t('publish.fillRequired'));
+    return;
+  }
+
+  if (!validateHttpUrl(website)) {
+    alert(t('publish.invalidWebsite'));
+    return;
+  }
+  if (!EMAIL_RE.test(email)) {
+    alert(t('publish.invalidEmail'));
     return;
   }
 
@@ -2240,8 +2258,8 @@ async function loadSettings() {
     setProvider(provider);
     document.getElementById('setting-api-provider').value = provider;
   } else {
-    setProvider('kie');
-    document.getElementById('setting-api-provider').value = 'kie';
+    setProvider('google');
+    document.getElementById('setting-api-provider').value = 'google';
   }
   updateApiKeyHint();
 

@@ -1018,8 +1018,16 @@ document.getElementById('btn-analyze-all').addEventListener('click', async () =>
     }
 
     await updateRecord(STORES.BACKLINKS, bl);
-    await loadBacklinksList();
+    // Re-render the full list every 10 items instead of every item. DB is
+    // already authoritative; in-between iterations the button text shows
+    // progress, so users don't need a full relayout per record.
+    if ((i + 1) % 10 === 0) {
+      await loadBacklinksList();
+    }
   }
+
+  // Final refresh to reflect the tail (and whatever the stopped midway state is)
+  await loadBacklinksList();
 
   btnAnalyze.textContent = analyzeRunning
     ? t('backlinks.analyzeComplete', stats)
@@ -1606,16 +1614,30 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
     // C3/C4: site-level coverage map for this backlink (used by the for-s skip check below)
     let hForBl = history.get(bl.id) || new Map();
 
-    // Page-level pre-check: open once, analyze, close — skip page if unusable
+    // Page-level pre-check: open once, analyze, then hand the tab off to the
+    // first site iteration below so we don't re-analyze/re-open for site s=0.
+    // If the pre-check hits a skip path (captcha, blocker, no comment field)
+    // or the pre-check itself throws, preTabId is closed before `continue`.
     let pageAnalysis = null;
+    let preTabId = null;
     try {
       const preResult = await chrome.runtime.sendMessage({ type: 'analyzeUrl', url: bl.sourceUrl });
-      const preTabId = preResult.tabId;
+      preTabId = preResult.tabId;
       pageAnalysis = await chrome.runtime.sendMessage({ type: 'analyzePageViaContentScript', tabId: preTabId });
-      await chrome.runtime.sendMessage({ type: 'closeTab', tabId: preTabId });
     } catch (err) {
       addLog(logEntries, t('common.error', { message: err.message }), 'error');
+      if (preTabId != null) {
+        try { await chrome.runtime.sendMessage({ type: 'closeTab', tabId: preTabId }); } catch {}
+        preTabId = null;
+      }
     }
+    // Helper used by every pre-check skip path below to close the carry-over tab.
+    const discardPreTab = async () => {
+      if (preTabId != null) {
+        try { await chrome.runtime.sendMessage({ type: 'closeTab', tabId: preTabId }); } catch {}
+        preTabId = null;
+      }
+    };
 
     // Snapshot the pageAnalysis into the shape we persist on failure. Keeping
     // this narrow avoids leaking honeypot values or page text into logs.
@@ -1642,6 +1664,7 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           pageAnalysis: pageAnalysisSummary,
           logEntries: [...currentAttemptLog]
         });
+        await discardPreTab();
         continue;
       }
       const cap = pageAnalysis.captcha;
@@ -1658,6 +1681,7 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           captchaDetails: { type: cap.type, provider: cap.provider || null, solved: false },
           logEntries: [...currentAttemptLog]
         });
+        await discardPreTab();
         continue;
       }
       if (pageAnalysis.blockers?.includes('cleantalk') || pageAnalysis.blockers?.includes('jetpack_iframe')) {
@@ -1672,6 +1696,7 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           pageAnalysis: pageAnalysisSummary,
           logEntries: [...currentAttemptLog]
         });
+        await discardPreTab();
         continue;
       }
     }
@@ -1686,6 +1711,7 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         });
         btnStart.hidden = false;
         btnStop.hidden = true;
+        await discardPreTab();
         return;
       }
 
@@ -1717,6 +1743,9 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         if (!bl._siteResults) bl._siteResults = [];
         bl._siteResults.push(resultTag);
         pubStats.skipped++;
+        // If we had a pre-check tab reserved for s=0 and that iteration is
+        // being skipped, release it now. Later iterations open fresh tabs.
+        if (s === siteStart) await discardPreTab();
         continue;
       }
 
@@ -1739,7 +1768,17 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         addLog(logEntries, t('publish.opening', { url: bl.sourceUrl }), 'info');
 
         const t0Analyze = performance.now();
-        const result = await chrome.runtime.sendMessage({ type: 'analyzeUrl', url: bl.sourceUrl });
+        // Tab reuse: the first site iteration for this backlink inherits the
+        // pre-check tab (same URL, already loaded & analyzed) so we don't
+        // re-open it. Consume preTabId by nulling it after transfer so the
+        // pre-check cleanup path can't double-close.
+        let result;
+        if (s === siteStart && preTabId != null) {
+          result = { tabId: preTabId };
+          preTabId = null;
+        } else {
+          result = await chrome.runtime.sendMessage({ type: 'analyzeUrl', url: bl.sourceUrl });
+        }
         tabId = result.tabId;
 
         let pageInfo;
@@ -2112,6 +2151,10 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         await new Promise(resolve => setTimeout(resolve, delay * 1000));
       }
     }
+
+    // Safety net: if selectedSites was empty or every iteration consumed
+    // preTabId already, this is a no-op. Otherwise we'd leak the pre-check tab.
+    await discardPreTab();
 
     // C10: aggregate bl.status from COMMENTS history; skip if a page-blocker was already set in C8/C9
     const PAGE_BLOCKERS_AGG = ['requires_login', 'captcha_blocked', 'not_commentable', 'error'];

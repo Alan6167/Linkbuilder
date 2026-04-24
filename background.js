@@ -1202,6 +1202,37 @@ async function fillForm(formData, fieldSelectors, honeypotFields) {
   const commentFilled = results.comment === 'filled';
   const filledCount = Object.values(results).filter(v => v === 'filled').length;
 
+  // Pre-submit required-field check. Only when comment was filled (otherwise
+  // fillForm already reports success:false and we don't care about other
+  // validation). Scope the scan to the form containing the comment field —
+  // we must NOT scan document-wide, which would pick up search boxes and
+  // login popups elsewhere on the page. A pure contenteditable target has no
+  // enclosing form; skip the check there.
+  if (commentFilled) {
+    const commentEl = findElement(fieldSelectors.comment, 'comment');
+    const form = commentEl && commentEl.closest ? commentEl.closest('form') : null;
+    if (form) {
+      const missingFields = [];
+      for (const field of form.querySelectorAll('input[required], textarea[required]')) {
+        if (!isFillableInput(field)) continue;
+        if ((field.value || '').trim() === '') {
+          missingFields.push(field.name || field.id || field.type || 'unknown');
+        }
+      }
+      if (missingFields.length > 0) {
+        return {
+          success: false,
+          error: 'required_empty',
+          results: { ...results, required: 'required_empty' },
+          fieldFillResults,
+          missingFields,
+          filledCount,
+          totalCount: Object.keys(formData).length
+        };
+      }
+    }
+  }
+
   return {
     success: commentFilled,
     results,

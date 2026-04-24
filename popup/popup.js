@@ -1915,6 +1915,10 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         if (!fillResult.success) {
           const details = Object.entries(fillResult.results || {})
             .map(([k, v]) => `${k}:${v}`).join(', ');
+          if (fillResult.error === 'required_empty') {
+            const missing = (fillResult.missingFields || []).join(', ');
+            throw new Error(`required_empty: ${missing || details}`);
+          }
           throw new Error(t('publish.fillFailed', { details }));
         }
 
@@ -2248,12 +2252,13 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
 function classifyFailure(errorMessage, status) {
   const KNOWN_SOFT = new Set([
     'submit_failed', 'rejected', 'captcha_blocked',
-    'requires_login', 'not_commentable'
+    'requires_login', 'not_commentable', 'required_empty'
   ]);
   if (status && (KNOWN_SOFT.has(status) || status.startsWith('captcha_') || status.startsWith('no_'))) {
     return status;
   }
   const msg = (errorMessage || '').toLowerCase();
+  if (msg.includes('required_empty')) return 'required_empty';
   if (msg.includes('textarea not found') || msg.includes('no_selector')) return 'no_comment_field';
   if (msg.includes('not_found') || msg.includes('form not found')) return 'form_not_found';
   if (msg.includes('set_failed')) return 'react_or_vue_form';

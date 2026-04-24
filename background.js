@@ -286,6 +286,28 @@ function analyzePageInline() {
     submitButton: null
   };
 
+  // Analysis-phase field filter: reject disabled/readonly/hidden/password
+  // but intentionally ignore visibility. Many comment forms (WordPress default
+  // theme, Jetpack) keep name/email/website display:none until the comment
+  // box gets focus; dropping them at analyze time loses the selectors.
+  function isFillableInput(el) {
+    if (!el) return false;
+    const tag = el.tagName;
+    if (tag !== 'INPUT' && tag !== 'TEXTAREA') return false;
+    if (el.disabled || el.readOnly) return false;
+    const type = (el.type || '').toLowerCase();
+    if (['hidden', 'submit', 'button', 'reset', 'image', 'file',
+         'checkbox', 'radio', 'search', 'password'].includes(type)) return false;
+    return true;
+  }
+
+  function isFillableCommentTarget(el) {
+    if (!el) return false;
+    if (el.tagName === 'TEXTAREA') return !el.disabled && !el.readOnly;
+    if (el.isContentEditable || el.getAttribute('contenteditable') === 'true') return true;
+    return false;
+  }
+
   function getSelector(el) {
     if (el.id) return `#${el.id}`;
     if (el.name) return `[name="${el.name}"]`;
@@ -314,9 +336,10 @@ function analyzePageInline() {
     }
   }
 
-  // Strategy 2: Any form with a textarea
+  // Strategy 2: Any form with a fillable textarea
   if (!commentForm) {
     for (const ta of document.querySelectorAll('textarea')) {
+      if (!isFillableCommentTarget(ta)) continue;
       const parent = ta.closest('form');
       if (parent) { commentForm = parent; break; }
     }
@@ -328,9 +351,12 @@ function analyzePageInline() {
 
     function findInput(container, patterns) {
       for (const p of patterns) {
-        let el = container.querySelector(`input[name*="${p}" i]`)
-          || container.querySelector(`input[id*="${p}" i]`)
-          || container.querySelector(`input[placeholder*="${p}" i]`);
+        const candidates = [
+          ...container.querySelectorAll(`input[name*="${p}" i]`),
+          ...container.querySelectorAll(`input[id*="${p}" i]`),
+          ...container.querySelectorAll(`input[placeholder*="${p}" i]`)
+        ];
+        const el = candidates.find(isFillableInput);
         if (el) return { selector: getSelector(el), name: el.name || el.id, type: el.type };
       }
       return null;
@@ -341,7 +367,7 @@ function analyzePageInline() {
       email: findInput(commentForm, ['email', 'mail', 'e-mail']),
       website: findInput(commentForm, ['url', 'website', 'web', 'site', 'homepage']),
       comment: (() => {
-        const ta = commentForm.querySelector('textarea');
+        const ta = [...commentForm.querySelectorAll('textarea')].find(isFillableCommentTarget);
         return ta ? { selector: getSelector(ta), name: ta.name || ta.id, type: 'textarea' } : null;
       })()
     };
@@ -643,9 +669,12 @@ function analyzePageInline() {
   // Helpers
   function findNearbyInput(container, patterns) {
     for (const p of patterns) {
-      let el = container.querySelector(`input[name*="${p}" i]`)
-        || container.querySelector(`input[id*="${p}" i]`)
-        || container.querySelector(`input[placeholder*="${p}" i]`);
+      const candidates = [
+        ...container.querySelectorAll(`input[name*="${p}" i]`),
+        ...container.querySelectorAll(`input[id*="${p}" i]`),
+        ...container.querySelectorAll(`input[placeholder*="${p}" i]`)
+      ];
+      const el = candidates.find(isFillableInput);
       if (el) return { selector: getSelector(el), name: el.name || el.id, type: el.type };
     }
     return null;
@@ -1027,6 +1056,25 @@ function solveCaptchaOnPage(captchaInfo) {
 async function fillForm(formData, fieldSelectors, honeypotFields) {
   const results = {};
 
+  // Mirror analyzePageInline's field predicates. Injected functions don't share
+  // scope with background module-level helpers so these are defined locally.
+  function isFillableInput(el) {
+    if (!el) return false;
+    const tag = el.tagName;
+    if (tag !== 'INPUT' && tag !== 'TEXTAREA') return false;
+    if (el.disabled || el.readOnly) return false;
+    const type = (el.type || '').toLowerCase();
+    if (['hidden', 'submit', 'button', 'reset', 'image', 'file',
+         'checkbox', 'radio', 'search', 'password'].includes(type)) return false;
+    return true;
+  }
+  function isFillableCommentTarget(el) {
+    if (!el) return false;
+    if (el.tagName === 'TEXTAREA') return !el.disabled && !el.readOnly;
+    if (el.isContentEditable || el.getAttribute('contenteditable') === 'true') return true;
+    return false;
+  }
+
   // Clear honeypot fields — these must stay empty to pass anti-spam
   if (honeypotFields?.length > 0) {
     for (const sel of honeypotFields) {
@@ -1049,21 +1097,28 @@ async function fillForm(formData, fieldSelectors, honeypotFields) {
     }
   }
 
-  function findElement(selector) {
+  function findElement(selector, fieldKind) {
     if (!selector) return null;
-    let el = null;
-    if (selector.selector) {
-      try { el = document.querySelector(selector.selector); } catch {}
-    }
-    if (!el && selector.name) {
-      el = document.querySelector(`[name="${selector.name}"]`);
-    }
-    return el;
+    const predicate = fieldKind === 'comment' ? isFillableCommentTarget : isFillableInput;
+
+    const collect = (raw) => {
+      if (!raw) return [];
+      try { return [...document.querySelectorAll(raw)]; } catch { return []; }
+    };
+    const candidates = [];
+    if (selector.selector) candidates.push(...collect(selector.selector));
+    if (selector.name) candidates.push(...collect(`[name="${selector.name}"]`));
+
+    // Prefer a candidate that passes the field predicate; fall back to the
+    // first match if nothing passes (still better than nothing for exotic
+    // sites, and downstream code records set_failed when it fails).
+    const fillable = candidates.find(predicate);
+    return fillable || candidates[0] || null;
   }
 
   // Step 1: focus/click the comment textarea first to trigger progressive disclosure
   // (Jetpack / Squarespace / modern blogs reveal name/email fields only after interacting with textarea)
-  const commentEl = findElement(fieldSelectors.comment);
+  const commentEl = findElement(fieldSelectors.comment, 'comment');
   if (commentEl) {
     commentEl.scrollIntoView({ block: 'center' });
     commentEl.click();
@@ -1095,7 +1150,7 @@ async function fillForm(formData, fieldSelectors, honeypotFields) {
     }
 
     // Re-query elements (some may have just been rendered by JS)
-    const element = findElement(selector);
+    const element = findElement(selector, field === 'comment' ? 'comment' : 'input');
     const selStr = selector.selector || selector.name || null;
 
     if (element) {

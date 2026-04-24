@@ -1291,7 +1291,7 @@ document.getElementById('btn-resume-task').addEventListener('click', async () =>
     delay: task.delay,
     startPageIndex: task.pageIndex,
     startSiteIndex: task.siteIndex,
-    initialStats: task.stats || { confirmed: 0, moderation: 0, failed: 0, captcha: 0 }
+    initialStats: mergePubStats(task.stats)
   });
 });
 
@@ -1438,7 +1438,7 @@ document.getElementById('btn-start-publish').addEventListener('click', async () 
     delay,
     startPageIndex: 0,
     startSiteIndex: 0,
-    initialStats: { confirmed: 0, moderation: 0, failed: 0, captcha: 0 }
+    initialStats: freshPubStats()
   });
 });
 
@@ -1492,6 +1492,25 @@ document.getElementById('btn-reset-cursor')?.addEventListener('click', async () 
 });
 
 // ========== Publish task state (for resume) ==========
+const DEFAULT_PUB_STATS = Object.freeze({
+  confirmed: 0,
+  alreadyExists: 0,
+  pendingModeration: 0,
+  pendingReview: 0,
+  failed: 0,
+  captcha: 0,
+  skipped: 0
+});
+
+function freshPubStats() { return { ...DEFAULT_PUB_STATS }; }
+
+// Task-resume path: merge stored stats onto the default template so old
+// sessions that persisted the {confirmed,moderation,failed,captcha} shape
+// fall back to zeroes for the new buckets without crashing.
+function mergePubStats(stored) {
+  return { ...DEFAULT_PUB_STATS, ...(stored || {}) };
+}
+
 async function saveTaskState(state) {
   await setSetting('currentPublishTask', state);
 }
@@ -1697,6 +1716,7 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         addLog(logEntries, t(logKey, { site: site.profileName }), 'info');
         if (!bl._siteResults) bl._siteResults = [];
         bl._siteResults.push(resultTag);
+        pubStats.skipped++;
         continue;
       }
 
@@ -1771,7 +1791,7 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
           addLog(logEntries, t('publish.alreadyCommented', { site: site.profileName }), 'info');
           if (!bl._siteResults) bl._siteResults = [];
           bl._siteResults.push('already_exists');
-          pubStats.moderation++;
+          pubStats.alreadyExists++;
           if (mode === 'auto') {
             await chrome.runtime.sendMessage({ type: 'closeTab', tabId });
             tabId = null;
@@ -1996,7 +2016,7 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
                 _tabId: tabId, _frameId: frameId
               });
             }
-            else pubStats.moderation++;
+            else pubStats.pendingModeration++;
           } else {
             addLog(logEntries, t('publish.submitFailed', { error: submitResult.error || 'unknown' }), 'error');
             commentStatus = 'submit_failed';
@@ -2021,7 +2041,7 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
         } else {
           commentStatus = 'pending_review';
           addLog(logEntries, t('publish.review'), 'info');
-          pubStats.moderation++;
+          pubStats.pendingReview++;
         }
 
         // C1/D1: requires_login / captcha are page-level now; skip COMMENTS write for them
@@ -2161,13 +2181,17 @@ async function runPublishLoop({ backlinkIds, selectedSites, mode, delay, startPa
   btnStart.hidden = false;
   btnStop.hidden = true;
   publishRunning = false;
-  const actualTotal = pubStats.confirmed + pubStats.moderation + pubStats.failed + pubStats.captcha;
+  const actualTotal = pubStats.confirmed + pubStats.alreadyExists + pubStats.pendingModeration
+    + pubStats.pendingReview + pubStats.failed + pubStats.captcha + pubStats.skipped;
   addLog(logEntries, t('publish.summaryDetail', {
     total: actualTotal,
     confirmed: pubStats.confirmed,
-    moderation: pubStats.moderation,
+    alreadyExists: pubStats.alreadyExists,
+    pendingModeration: pubStats.pendingModeration,
+    pendingReview: pubStats.pendingReview,
     failed: pubStats.failed,
-    captcha: pubStats.captcha
+    captcha: pubStats.captcha,
+    skipped: pubStats.skipped
   }), pubStats.failed > 0 ? 'error' : 'success');
   // Refresh the cursor progress hint so the user immediately sees that this
   // run advanced the cursor (and "next batch" will pick different entries).

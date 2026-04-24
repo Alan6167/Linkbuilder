@@ -1,5 +1,5 @@
 import {
-  STORES, addRecords, getAllRecords, updateRecord, deleteRecord,
+  STORES, addRecords, addRecordsBestEffort, getAllRecords, updateRecord, deleteRecord,
   deleteCommentsByBacklinkId, clearStore, getRecordCount,
   getSetting, setSetting, normalizeUrl,
   addToBlacklist, getBlacklist, removeFromBlacklist, clearBlacklist,
@@ -214,8 +214,24 @@ document.getElementById('btn-save-import').addEventListener('click', async () =>
   btn.textContent = t('import.saving');
 
   try {
-    const count = await addRecords(STORES.BACKLINKS, filteredBacklinks);
-    btn.textContent = t('import.saved', { count });
+    // Second-pass dedup against DB backlinks + intra-batch duplicates, keyed on
+    // normalizeUrl. filterBacklinks already dropped blacklist/library matches,
+    // but the DB's existing backlinks weren't considered there.
+    const existingBacklinks = await getAllRecords(STORES.BACKLINKS);
+    const existingKeys = new Set(existingBacklinks.map(b => normalizeUrl(b.sourceUrl)));
+    const toSave = [];
+    let skipped = 0;
+    for (const bl of filteredBacklinks) {
+      const key = normalizeUrl(bl.sourceUrl);
+      if (existingKeys.has(key)) { skipped++; continue; }
+      existingKeys.add(key);
+      toSave.push(bl);
+    }
+
+    const count = toSave.length > 0 ? await addRecords(STORES.BACKLINKS, toSave) : 0;
+    btn.textContent = skipped > 0
+      ? t('import.savedWithSkipped', { count, skipped })
+      : t('import.saved', { count });
     setTimeout(() => {
       btn.textContent = t('import.save');
       btn.disabled = false;
@@ -262,18 +278,20 @@ document.getElementById('btn-add-urls').addEventListener('click', async () => {
     getLibrary(),
     getSetting('skipLibraryOnImport')
   ]);
-  const existingUrls = new Set(existing.map(b => b.sourceUrl));
+  // All membership sets are keyed on normalizeUrl so the comparison is
+  // consistent across paste / blacklist / library / existing-DB paths.
+  const existingKeys = new Set(existing.map(b => normalizeUrl(b.sourceUrl)));
   const blacklistSet = new Set(blacklistRecords.map(r => r.sourceUrl));
   const librarySet = (skipLibrary !== false) ? new Set(libraryRecords.map(r => r.sourceUrl)) : null;
 
   const newRecords = [];
   let skipped = 0;
   for (const url of validUrls) {
-    if (existingUrls.has(url)) { skipped++; continue; }
     const norm = normalizeUrl(url);
+    if (existingKeys.has(norm)) { skipped++; continue; }
     if (blacklistSet.has(norm)) { skipped++; continue; }
     if (librarySet && librarySet.has(norm)) { skipped++; continue; }
-    existingUrls.add(url);
+    existingKeys.add(norm);
     const domain = new URL(url).hostname;
     newRecords.push({
       ascore: 0,
@@ -975,10 +993,17 @@ document.getElementById('btn-analyze-all').addEventListener('click', async () =>
         stats.error++;
       }
 
-      // Extract comment links for snowball discovery
+      // Extract comment links for snowball discovery.
+      // Use addRecordsBestEffort: duplicate URLs (ConstraintError) are skipped
+      // silently; any other failure is logged but must not abort the analyze
+      // run since discovered_sites is auxiliary data.
       const linksResult = await chrome.runtime.sendMessage({ type: 'extractLinksViaContentScript', tabId });
       if (linksResult?.links?.length > 0) {
-        try { await addRecords(STORES.DISCOVERED_SITES, linksResult.links); } catch { /* duplicates ok */ }
+        try {
+          await addRecordsBestEffort(STORES.DISCOVERED_SITES, linksResult.links);
+        } catch (e) {
+          console.warn('[discovered_sites] save failed, continuing:', e);
+        }
       }
 
     } catch (err) {
